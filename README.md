@@ -8,15 +8,16 @@ You give it two places and get an MP4 that plays offline on any phone or player.
   Flights use the van Wijk & Nuij smooth zoom-and-pan curve (the same curve as MapLibre's `flyTo`).
 - **Street-level close-ups at every key turn.** The map is rotated so the direction of travel points up,
   tilted 40°, with 3D buildings and a big instruction card that's readable on a phone.
-- **A red route line and a blue position dot** that sit exactly on the road, even in tilted views.
+- **A red route line and a blue position dot** that sit on the road to the pixel, even in tilted views and
+  during camera flights.
 - **Narration** from a local Kokoro voice. The timestamps of each spoken sentence set the pacing.
 - **Extras:** "Now entering <State>" chips at borders; a bottom strip with miles done and left, time left and
   the next turn; a progress bar; soft subtitles; and a chapter for each line.
 
 | Test route | Distance | Video | Size | Render time (2 CPU cores, no GPU) |
 | --- | --- | --- | --- | --- |
-| New York City Hall → Hollywood & Vine | 2,800 mi | 3:42 | 45 MB | 7 min |
-| Potomac Mills, VA → Wise, VA | 379 mi | 2:57 | 32 MB | 5 min |
+| New York City Hall → Hollywood & Vine | 2,800 mi | 3:43 | 46 MB | 4.5 min |
+| Potomac Mills, VA → Wise, VA | 379 mi | 3:02 | 34 MB | 3 min |
 
 It's a **preview, not navigation**. The routing comes from the free OSRM demo server and can differ from what Google picks.
 
@@ -33,14 +34,17 @@ python3 routevid3.py --from "Potomac Mills, Woodbridge VA" --to "Wise, Wise Coun
   --narrate voices/kokoro-v1 --work wise --plan-only
 
 # 2. stills: prints the shot table (hold / fly, start–end) and saves a few frames as JPGs
-python3 routevid3.py ...same args... --stills 2,12,20,45
+python3 routevid3.py --work wise --stills 2,12,20,45
 
-# 3. render (about 2x real time; run long trips in the background)
-python3 routevid3.py ...same args... --out briefing.mp4
+# 3. render (faster than real time; run long trips in the background)
+python3 routevid3.py --work wise --out briefing.mp4
 ```
 
-On first run the script installs `@maplibre/maplibre-gl-native@6` into its cache folder (`~/.cache/routevid`)
-and calls `xvfb-run` itself.
+The first run saves the trip's settings in `<work>/args.json`, so steps 2 and 3 need only `--work` and can't
+render a different route from the one you reviewed. Pass an option again to change it (the script says so).
+
+On first run the script installs `@maplibre/maplibre-gl-native@6.4.1` (pinned: the version in the measurements)
+into its cache folder (`~/.cache/routevid`) and calls `xvfb-run` itself.
 
 **The voice:** download Kokoro v1.0 from Hugging Face `onnx-community/Kokoro-82M-v1.0-ONNX`. Put
 `onnx/model.onnx`, `tokenizer.json` and `voices/af_heart.bin` in one folder, and pass that folder with `--narrate`.
@@ -51,8 +55,8 @@ Leave out `--narrate` for a silent video with estimated pacing.
 
 **Check the narration:** `tools/check_audio.py` runs speech recognition over `narration.wav` and flags lines
 that don't match the script. It needs `sherpa-onnx-zipformer-small-en-2023-06-26` from the sherpa-onnx `asr-models`
-release. Copy `<work>/plan.json` and add `"audio": "narration.wav", "timestamps": "labels.txt"`, then run
-`python3 tools/check_audio.py plan_check.json --asr-dir <model folder>`.
+release. A narrated render writes `<work>/plan_check.json` for it, so just run
+`python3 tools/check_audio.py <work>/plan_check.json --asr-dir <model folder>`.
 
 ## Review the turn list
 
@@ -87,9 +91,12 @@ last is DESTINATION; step numbers come from the OSRM step list.
 5. **Held views use an ID-image trick.** Each hold makes three renders: the map without the route, the map with
    the full route, and a hidden "ID image" whose route colours encode miles along the trip
    (R = i % 256, G = i / 256, B = 255). NumPy then reveals the red line up to the dot's mile and places the dot
-   and turn markers at the matching pixels. That's exact even under tilt, and costs about 40 ms per frame.
-6. **Flights render live.** The red line is filtered to the boundary mile with `setFilter`, and 3D buildings are
-   hidden during flights, then fade in when the camera settles.
+   and turn markers at the matching pixels. That's pixel-accurate even under tilt, and costs about 10 ms per frame,
+   because only the route's bounding box is recomposited.
+6. **Flights render live.** The red line is filtered to the boundary mile with `setFilter`, and the blue dot is a
+   MapLibre circle layer at that mile, so it stays on the road while the camera moves. 3D buildings are hidden
+   during flights, then fade in when the camera settles. Big rotations get longer flights (at most about
+   135° a second), so a U-turn reads as a turn rather than a spin.
 7. **Encode.** ffmpeg (H.264 `-tune animation`, bitrate capped), plus AAC narration, soft subtitles and chapters.
 
 More detail: [docs/RESULTS.md](docs/RESULTS.md) (version history and measurements) and the two AI-review handouts in [docs/](docs/).
