@@ -53,7 +53,7 @@ jobs:
           mkdir -p bundle/lib
           binary="$(find bundle/node_modules -type f -name '*.node' | head -1)"
           ldd "$binary" | tee bundle/ldd-native.txt
-          for pattern in 'libicuuc.so.74' 'libicui18n.so.74' 'libicudata.so.74' 'libjpeg.so.8'; do
+          for pattern in 'libicuuc.so.74' 'libicui18n.so.74' 'libicudata.so.74' 'libjpeg.so.8' 'libpng16.so.16'; do
             src="$(ldconfig -p | awk -v pat="$pattern" '$1 == pat {print $NF; exit}')"
             test -n "$src"
             cp -L "$src" "bundle/lib/$pattern"
