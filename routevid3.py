@@ -40,12 +40,13 @@ ap.add_argument("--voice", default="af_heart")
 ap.add_argument("--max-turns", type=int); ap.add_argument("--turns-json")
 ap.add_argument("--style", default="https://tiles.openfreemap.org/styles/liberty")
 ap.add_argument("--crf", type=int, default=24); ap.add_argument("--maxrate", default="3M", help="x264 bitrate cap (flights over cities are costly)")
+ap.add_argument("--offline-assets", help="One-pass ZIP from map-fetcher; no network fallback")
 ap.add_argument("--plan-only", action="store_true"); ap.add_argument("--stills")
 A = ap.parse_args()
 WORK = os.path.abspath(A.work); os.makedirs(WORK, exist_ok=True); os.makedirs(A.cache, exist_ok=True)
 # The trip's settings are saved in <work>/args.json by the first run, so later steps (--stills, render)
 # need only --work and can't silently render a different route from the one that was reviewed.
-SAVED = ["src", "dst", "from_label", "to_label", "contact", "narrate", "voice", "max_turns", "turns_json", "style", "crf", "maxrate"]
+SAVED = ["src", "dst", "from_label", "to_label", "contact", "narrate", "voice", "max_turns", "turns_json", "style", "crf", "maxrate", "offline_assets"]
 _defaults = {a.dest: a.default for a in ap._actions}
 for a in ap._actions: a.default = argparse.SUPPRESS       # parse again with no defaults: what remains was typed
 _given = set(vars(ap.parse_args()))
@@ -63,9 +64,15 @@ if not (A.src and A.dst and A.contact):
     ap.error("give --from, --to and --contact (or --work of a trip that was already planned)")
 json.dump({k: getattr(A, k) for k in SAVED}, open(_argf, "w"), indent=1)
 UA = f"RouteVideo/3.0 ({A.contact})"
+# OPENAI_OFFLINE_HANDOFF_V1
+OFFLINE = bool(A.offline_assets)
+if OFFLINE:
+    from tools.offline_assets import seed
+    print("offline assets:", seed(A.offline_assets, A.cache, A.src, A.dst, A.style))
 
 # ====================================================================== web helpers
 def http(url, params=None, binary=False, retries=4):
+    if OFFLINE: raise RuntimeError("offline-only: missing request asset: " + url)
     if params: url += "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     for k in range(retries):
@@ -99,6 +106,7 @@ US_ABBR = {"Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "
            "District of Columbia": "DC"}
 ABBR_US = {v: k for k, v in US_ABBR.items()}
 def place_name(lon, lat):
+    if OFFLINE: return f"{lat:.3f}, {lon:.3f}"
     def go():
         time.sleep(1.1)
         r = http("https://nominatim.openstreetmap.org/reverse", {"lat": lat, "lon": lon, "format": "json", "zoom": 12})
@@ -233,6 +241,7 @@ turns[-1]["mile"] = TOTAL
 # ====================================================================== borders (Natural Earth admin-1, from GitHub)
 crossings = [dict(mile=0.0, state="")]
 try:
+    if OFFLINE: raise RuntimeError("Natural Earth borders not supplied in offline ZIP")
     NE = f"{A.cache}/ne"; os.makedirs(NE, exist_ok=True)
     base = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/10m_cultural/ne_10m_admin_1_states_provinces"
     for ext in ("shp", "shx", "dbf", "prj"):
@@ -541,6 +550,9 @@ async function pump(){if(busy)return;busy=true;while(q.length){const c=q.shift()
  }catch(e){console.error('worker error',e.message);process.exit(2);}}busy=false;}
 rl.on('close',()=>{const w=()=>{if(busy||q.length)return setTimeout(w,50);map.release();process.exit(0);};w();});
 """.replace("%RATIO%", str(RATIO)).replace("%VW%", str(VW)).replace("%VH%", str(VH))
+if OFFLINE:
+    WORKER = WORKER.replace('if(fs.existsSync(f))return Promise.resolve({data:fs.readFileSync(f)});net++;',
+        "if(fs.existsSync(f))return Promise.resolve({data:fs.readFileSync(f)});return Promise.reject(new Error('offline asset missing: '+url));net++;")
 open(f"{NODE}/worker.js", "w").write(WORKER)
 
 # style: OpenFreeMap + route pieces split at every segment boundary + curated labels
