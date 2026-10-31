@@ -1,0 +1,12 @@
+# render output and work folders
+*.mp4
+*.wav
+*_work/
+routevid_work/
+tts_cache/
+stills/
+# downloaded models and voices
+voices/
+models/
+__pycache__/
+node_modules/

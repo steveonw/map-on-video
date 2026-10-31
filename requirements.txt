@@ -1,0 +1,12 @@
+numpy
+scipy
+pillow
+geopandas
+pyogrio
+shapely
+# narration (tools/narrate.py, Kokoro v1.0 on CPU)
+onnxruntime
+espeakng-loader
+phonemizer-fork
+# narration check (tools/check_audio.py)
+sherpa-onnx
