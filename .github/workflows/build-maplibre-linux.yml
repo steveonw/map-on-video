@@ -1,0 +1,53 @@
+name: Build Linux MapLibre native bundle
+
+on:
+  push:
+    branches:
+      - openai-offline-handoff
+    paths:
+      - '.github/workflows/build-maplibre-linux.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install native renderer
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p bundle
+          cd bundle
+          npm init -y
+          npm install --no-audit --no-fund '@maplibre/maplibre-gl-native@6.4.1'
+      - name: Verify native binary and loader
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd bundle
+          node -e "const m=require('@maplibre/maplibre-gl-native'); console.log('MapLibre loaded:', Object.keys(m).slice(0,12)); if(typeof m.Map!=='function') process.exit(1)"
+          find node_modules -type f -name '*.node' -print | tee native-binaries.txt
+          test -s native-binaries.txt
+          node --version > node-version.txt
+          uname -a > platform.txt
+      - name: Pack complete node_modules
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tar -C bundle -czf maplibre-native-linux-x64.tar.gz node_modules package.json package-lock.json native-binaries.txt node-version.txt platform.txt
+          ls -lh maplibre-native-linux-x64.tar.gz
+      - name: Upload tested bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: maplibre-native-linux-x64
+          path: maplibre-native-linux-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
