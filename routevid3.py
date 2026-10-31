@@ -26,9 +26,9 @@ MI = 1609.344
 W, H, FPS = 1920, 1080, 24
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--from", dest="src", required=True); ap.add_argument("--to", dest="dst", required=True)
+ap.add_argument("--from", dest="src"); ap.add_argument("--to", dest="dst")
 ap.add_argument("--from-label"); ap.add_argument("--to-label")
-ap.add_argument("--contact", required=True, help="email for the User-Agent (Nominatim/OSRM etiquette)")
+ap.add_argument("--contact", help="email for the User-Agent (Nominatim/OSRM etiquette)")
 ap.add_argument("--out", default="route_briefing.mp4")
 ap.add_argument("--work", default="routevid_work")
 ap.add_argument("--cache", default=os.path.expanduser("~/.cache/routevid"))
@@ -42,8 +42,27 @@ ap.add_argument("--style", default="https://tiles.openfreemap.org/styles/liberty
 ap.add_argument("--crf", type=int, default=24); ap.add_argument("--maxrate", default="3M", help="x264 bitrate cap (flights over cities are costly)")
 ap.add_argument("--plan-only", action="store_true"); ap.add_argument("--stills")
 A = ap.parse_args()
-UA = f"RouteVideo/3.0 ({A.contact})"
 WORK = os.path.abspath(A.work); os.makedirs(WORK, exist_ok=True); os.makedirs(A.cache, exist_ok=True)
+# The trip's settings are saved in <work>/args.json by the first run, so later steps (--stills, render)
+# need only --work and can't silently render a different route from the one that was reviewed.
+SAVED = ["src", "dst", "from_label", "to_label", "contact", "narrate", "voice", "max_turns", "turns_json", "style", "crf", "maxrate"]
+_defaults = {a.dest: a.default for a in ap._actions}
+for a in ap._actions: a.default = argparse.SUPPRESS       # parse again with no defaults: what remains was typed
+_given = set(vars(ap.parse_args()))
+for a in ap._actions: a.default = _defaults[a.dest]
+_argf = f"{WORK}/args.json"
+_old = json.load(open(_argf)) if os.path.exists(_argf) else None
+if _old and any(k in _given and getattr(A, k) != _old.get(k) for k in ("src", "dst")):
+    print(f"note: a different trip than the one saved in {_argf}; starting fresh"); _old = None
+if _old:
+    for k in SAVED:
+        if k in _given and k in _old and _old[k] != getattr(A, k): print(f"note: --{k.replace('_', '-')} changed since {_argf} was saved")
+        elif k not in _given and k in _old: setattr(A, k, _old[k])
+    if not _given & set(SAVED): print(f"using the trip saved in {_argf}")
+if not (A.src and A.dst and A.contact):
+    ap.error("give --from, --to and --contact (or --work of a trip that was already planned)")
+json.dump({k: getattr(A, k) for k in SAVED}, open(_argf, "w"), indent=1)
+UA = f"RouteVideo/3.0 ({A.contact})"
 
 # ====================================================================== web helpers
 def http(url, params=None, binary=False, retries=4):
@@ -318,6 +337,38 @@ print(f"key turns ({nkey} + start/arrive):")
 for i, t in enumerate(turns): print(f"  {i:2d}  mile {t['mile']:7.1f}  {t['title']:<26} {t['text']}")
 print("regions:", [(round(c['mile']), c['state']) for c in crossings])
 print("script:"); [print(f"  [{s['kind']:<6}] {s['text']}") for s in SEGS]
+# ====================================================================== fonts and turn cards (checked before any drawing)
+IF = "/usr/share/fonts/opentype/inter/Inter-{}.otf"
+def ui(w, s):
+    for p in (IF.format(w), "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+        if os.path.exists(p): return ImageFont.truetype(p, s)
+    return ImageFont.load_default(s)
+def serif(s):
+    p = "/usr/share/fonts/truetype/google-fonts/Lora-Variable.ttf"
+    if not os.path.exists(p): return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", s)
+    f = ImageFont.truetype(p, s); f.set_variation_by_name(b"Bold"); return f
+F = dict(num=ui("Bold", 19), head=ui("SemiBold", 24), card=ui("Bold", 46), strip_b=ui("Bold", 26), strip=ui("Medium", 23),
+         small=ui("Medium", 15), chip_s=ui("SemiBold", 18), chip=serif(40), title=serif(74), sub=ui("Medium", 28))
+def wrap(text, font, width=1250):
+    lines, cur = [], ""
+    for w_ in text.split():
+        trial = (cur + " " + w_).strip()
+        if font.getlength(trial) <= width or not cur: cur = trial
+        else: lines.append(cur); cur = w_
+    return lines + [cur]
+CARD_FIT = {}
+def card_fit(text):
+    """Largest card font (46 down to 34 px) that fits the instruction in 3 lines; never drops words."""
+    if text not in CARD_FIT:
+        for size in range(46, 33, -2):
+            f = F["card"] if size == 46 else ui("Bold", size); lines = wrap(text, f)
+            if len(lines) <= 3: break
+        CARD_FIT[text] = (f, lines)
+    return CARD_FIT[text]
+for t_ in turns:
+    if len(card_fit(t_["text"])[1]) > 3:
+        print(f"warning: the card for '{t_['title']}' needs {len(card_fit(t_['text'])[1])} lines; shorten it with --turns-json")
+
 if A.plan_only: sys.exit(0)
 
 
@@ -381,6 +432,10 @@ for i in range(len(SEGS) - 1):
     f, S = van_wijk(a, b)
     d = float(np.clip(S / 1.6, 1.0, 2.8))
     if abs(a["bearing"] - b["bearing"]) > 1 or abs(a["pitch"] - b["pitch"]) > 1: d = max(d, 1.4)
+    # each rotation (out of a tilted view, into the next) gets about 45% of the flight (see flight_cam):
+    # keep it under about 135 deg/s so a U-turn reads as a turn, not a spin, without long flights
+    turn_deg = max(abs(((a["bearing"] + 180) % 360) - 180), abs(((b["bearing"] + 180) % 360) - 180))
+    d = max(d, min(3.0, turn_deg / (0.45 * 135.0)))
     FLIGHTS.append(dict(a=a, b=b, f=f, dur=d, mile=SEGS[i]["m1"]))
 def flight_cam(fl, k):
     e = k * k * (3 - 2 * k); c, z = fl["f"](e); a, b = fl["a"], fl["b"]
@@ -415,6 +470,7 @@ if A.narrate:
         sc["lines"][0]["pause_after"] = round(max(0.35, s["want"] - (b - a), need_gap[i]), 2)
     lab = run_narrate()
     AUDIO = f"{WORK}/narration.wav"; tail = plan["scenes"][-1]["lines"][0]["pause_after"]
+    json.dump({**plan, "audio": "narration.wav", "timestamps": "labels.txt"}, open(f"{WORK}/plan_check.json", "w"), indent=1)   # for tools/check_audio.py
 else:
     lab, t = [], 0.4
     for i, s in enumerate(SEGS):
@@ -451,8 +507,10 @@ def mile_at(t):
 
 # ====================================================================== the map worker (native MapLibre, Node, virtual display)
 NODE = f"{A.cache}/node3"; os.makedirs(NODE, exist_ok=True)
-if not os.path.exists(f"{NODE}/node_modules/@maplibre/maplibre-gl-native"):
-    subprocess.run(["npm", "install", "--prefix", NODE, "@maplibre/maplibre-gl-native@6", "--silent"], check=True)
+MBGL = "6.4.1"            # the version every number in docs/RESULTS.md was measured with; pinned so installs can't drift
+_pkg = f"{NODE}/node_modules/@maplibre/maplibre-gl-native/package.json"
+if not os.path.exists(_pkg) or json.load(open(_pkg)).get("version") != MBGL:
+    subprocess.run(["npm", "install", "--prefix", NODE, f"@maplibre/maplibre-gl-native@{MBGL}", "--silent"], check=True)
 WORKER = r"""
 const mbgl=require('@maplibre/maplibre-gl-native');const fs=require('fs'),path=require('path'),https=require('https'),crypto=require('crypto'),readline=require('readline');
 const [styleFile,CACHE,UA]=process.argv.slice(2);fs.mkdirSync(CACHE,{recursive:true});
@@ -474,6 +532,7 @@ async function pump(){if(busy)return;busy=true;while(q.length){const c=q.shift()
     const red=c.mode==='none'?['==',['get','m1'],-1]:c.mode==='all'?['>=',['get','m1'],-1]:['<=',['get','m1'],c.mile+1e-9];
     const ahead=c.mode==='upto'?['>=',['get','m0'],c.mile-1e-9]:['>=',['get','m1'],-1];
     for(const id of ['route-casing','route-line'])map.setFilter(id,red);map.setFilter('route-ahead',ahead);
+    for(const id of ['dot-ring','dot-core'])map.setFilter(id,['==',['get','f'],c.dot===undefined?-1:c.dot]);
     for(const id of c.hide||[])map.setLayoutProperty(id,'visibility','none');for(const id of c.show||[])map.setLayoutProperty(id,'visibility','visible');
   }else if(c.cmd==='render'){await out(await render(map,c.cam));}
   else if(c.cmd==='id'){const idStyle=JSON.parse(fs.readFileSync(c.style));const m=new mbgl.Map({request:(r,cb)=>cb(null,{data:Buffer.alloc(0)}),ratio:%RATIO%});
@@ -512,6 +571,19 @@ style["layers"][first_sym:first_sym] = [
 style["layers"].append({"id": "briefing-labels", "type": "symbol", "source": "blabels",
     "layout": {"text-field": ["get", "t"], "text-font": ["Noto Sans Bold"], "text-size": 17, "text-allow-overlap": True, "text-ignore-placement": True,
                "text-anchor": "bottom", "text-offset": [0, -0.9]}, "paint": {"text-color": "#1c140c", "text-halo-color": "#fffaf0", "text-halo-width": 2.5}})
+# The you-are-here dot during flights: one point per flight (its mile is fixed while the camera moves),
+# drawn by MapLibre itself, so it sits on the road in any camera. Sizes match the dot Python draws in holds
+# (Pillow outlines grow inward, MapLibre strokes grow outward; CSS px = output px / RATIO).
+style["sources"]["flightdot"] = {"type": "geojson", "data": {"type": "FeatureCollection", "features": [
+    {"type": "Feature", "properties": {"f": i, "r": 15 if SEGS[i + 1]["kind"] == "close" else 12},
+     "geometry": {"type": "Point", "coordinates": lonlat_at(fl["mile"])}} for i, fl in enumerate(FLIGHTS)]}}
+style["layers"] += [
+    {"id": "dot-ring", "type": "circle", "source": "flightdot", "filter": ["==", ["get", "f"], -1],
+     "paint": {"circle-radius": ["/", ["+", ["get", "r"], 4], RATIO], "circle-opacity": 0, "circle-stroke-color": "rgb(30,110,255)",
+               "circle-stroke-width": 5 / RATIO, "circle-pitch-alignment": "viewport", "circle-pitch-scale": "viewport"}},
+    {"id": "dot-core", "type": "circle", "source": "flightdot", "filter": ["==", ["get", "f"], -1],
+     "paint": {"circle-radius": ["/", ["-", ["get", "r"], 4], RATIO], "circle-color": "rgb(30,110,255)", "circle-stroke-color": "#ffffff",
+               "circle-stroke-width": 4 / RATIO, "circle-pitch-alignment": "viewport", "circle-pitch-scale": "viewport"}}]
 EXTRUDE = [l["id"] for l in style["layers"] if l["type"] == "fill-extrusion"]
 json.dump(style, open(f"{WORK}/style.json", "w"))
 
@@ -526,10 +598,10 @@ class Worker:
         n = W * H * 4; buf = self.p.stdout.read(n)
         if len(buf) != n: raise SystemExit(f"map worker died (see {WORK}/worker.log)")
         return np.frombuffer(buf, np.uint8).reshape(H, W, 4)[..., :3]
-    def route(self, mode, mile=0.0, pitch=0.0):
-        key = (mode, round(mile, 6), pitch > 0)
+    def route(self, mode, mile=0.0, pitch=0.0, dot=-1):
+        key = (mode, round(mile, 6), pitch > 0, dot)
         if key == self.mode: return
-        self.send({"cmd": "route", "mode": mode, "mile": mile, "show" if pitch > 0 else "hide": EXTRUDE}); self.mode = key
+        self.send({"cmd": "route", "mode": mode, "mile": mile, "dot": dot, "show" if pitch > 0 else "hide": EXTRUDE}); self.mode = key
     def render(self, cam): self.send({"cmd": "render", "cam": cam}); return self.read()
     def id_render(self, style_path, cam): self.send({"cmd": "id", "style": style_path, "cam": cam}); return self.read()
     def close(self):
@@ -561,10 +633,13 @@ def hold_layers(seg):
     idx = idimg[..., 0].astype(np.int32) + 256 * idimg[..., 1].astype(np.int32)
     milegrid = np.where(core, ms[np.clip(idx, 0, len(ms) - 1)], np.inf).astype(np.float32)
     from scipy.ndimage import minimum_filter
-    milewide = minimum_filter(milegrid, size=11)
     diff = np.any(full != plain, axis=2)
+    wide = np.where(diff, minimum_filter(milegrid, size=11), np.inf).astype(np.float32)   # reveal mile per pixel; inf = never
+    dy, dx = np.nonzero(diff)
+    box = (int(dy.min()), int(dy.max()) + 1, int(dx.min()), int(dx.max()) + 1) if len(dy) else (0, 0, 0, 0)
     yy, xx = np.nonzero(core); mv = milegrid[core]; o = np.argsort(mv)
-    return dict(plain=plain, full=full, wide=milewide, diff=diff, ys=yy[o], xs=xx[o], mv=mv[o], step=seg_mi)
+    return dict(plain=np.ascontiguousarray(plain), full=np.ascontiguousarray(full), wide=wide, box=box,
+                ys=yy[o], xs=xx[o], mv=mv[o], step=seg_mi)
 def screen_pos(L, m):
     """Exact screen position of route mile m in a held view, from the ID image (works under tilt)."""
     lo_, hi_ = np.searchsorted(L["mv"], m - 2 * L["step"]), np.searchsorted(L["mv"], m + 0.5 * L["step"])
@@ -572,17 +647,6 @@ def screen_pos(L, m):
     return float(L["xs"][lo_:hi_].mean()), float(L["ys"][lo_:hi_].mean())
 
 # ====================================================================== drawing (overlays on top of the map)
-IF = "/usr/share/fonts/opentype/inter/Inter-{}.otf"
-def ui(w, s):
-    for p in (IF.format(w), "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
-        if os.path.exists(p): return ImageFont.truetype(p, s)
-    return ImageFont.load_default(s)
-def serif(s):
-    p = "/usr/share/fonts/truetype/google-fonts/Lora-Variable.ttf"
-    if not os.path.exists(p): return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", s)
-    f = ImageFont.truetype(p, s); f.set_variation_by_name(b"Bold"); return f
-F = dict(num=ui("Bold", 19), head=ui("SemiBold", 24), card=ui("Bold", 46), strip_b=ui("Bold", 26), strip=ui("Medium", 23),
-         small=ui("Medium", 15), chip_s=ui("SemiBold", 18), chip=serif(40), title=serif(74), sub=ui("Medium", 28))
 sm = ease
 def fmt_hm(s):
     s = max(0, int(s)); h, m = divmod(s // 60, 60); return f"{h} h {m:02d} min" if h else f"{m} min"
@@ -603,9 +667,12 @@ def draw_marks(d, L, seg, m, t):
             x, y = p
             if not (0 < x < W and 0 < y < H - 104): continue
             if i == len(turns) - 1: d.regular_polygon((x, y, 17), 5, fill=(255, 214, 0), outline=(40, 30, 20), width=3); continue
+            if i == 0:          # start: green "go" marker, so it can't be read as turn 5
+                d.ellipse([x - 16, y - 16, x + 16, y + 16], fill=(34, 160, 70), outline="white", width=3)
+                d.polygon([(x - 5, y - 8), (x - 5, y + 8), (x + 9, y)], fill="white"); continue
             done = tt["mile"] <= m
             d.ellipse([x - 15, y - 15, x + 15, y + 15], fill=(40, 30, 20) if done else (255, 214, 0), outline="white" if done else (40, 30, 20), width=3)
-            d.text((x, y), "S" if i == 0 else str(i), font=F["num"], fill="white" if done else (25, 20, 15), anchor="mm")
+            d.text((x, y), str(i), font=F["num"], fill="white" if done else (25, 20, 15), anchor="mm")
     if seg["kind"] in ("intro", "outro"): return
     p = screen_pos(L, m)
     if p is None: return
@@ -617,19 +684,14 @@ def draw_card(d, seg):
     tt = turns[seg["turn"]]
     head = ("START  ·  " + FROM.upper()) if seg["turn"] == 0 else ("DESTINATION  ·  " + TO.upper()) if seg["turn"] == len(turns) - 1 \
         else f"TURN {seg['turn']} OF {nkey}  ·  MILE {tt['mile']:,.0f}  ·  {tt['title'].upper()}"
-    lines, cur = [], ""
-    for w_ in tt["text"].split():
-        trial = (cur + " " + w_).strip()
-        if d.textlength(trial, font=F["card"]) <= 1250: cur = trial
-        else: lines.append(cur); cur = w_
-    lines.append(cur); lines = lines[:2]
-    d.rounded_rectangle([28, 24, 28 + max(d.textlength(l, font=F["card"]) for l in lines + [head]) + 64, 24 + 70 + 56 * len(lines)], radius=20, fill=(28, 22, 16, 238))
+    f, lines = card_fit(tt["text"]); lh = int(f.size * 1.22)
+    d.rounded_rectangle([28, 24, 28 + max([f.getlength(l) for l in lines] + [F["head"].getlength(head)]) + 64, 24 + 70 + lh * len(lines)], radius=20, fill=(28, 22, 16))
     d.text((60, 42), head, font=F["head"], fill=(255, 214, 0))
-    for i, l in enumerate(lines): d.text((60, 78 + 56 * i), l, font=F["card"], fill="white")
+    for i, l in enumerate(lines): d.text((60, 78 + lh * i), l, font=f, fill="white")
 
 def overlays(fr, t, m):
     d = ImageDraw.Draw(fr, "RGBA"); y0 = H - 104
-    d.rectangle([0, y0, W, H], fill=(28, 22, 16, 232))
+    d.rectangle([0, y0, W, H], fill=(28, 22, 16))
     head = f"{FROM}  →  {TO}"
     while d.textlength(head, font=F["strip_b"]) > 900: head = head[:-2]
     d.text((32, y0 + 14), head, font=F["strip_b"], fill="white")
@@ -650,12 +712,9 @@ def overlays(fr, t, m):
     for tt in turns[1:-1]:
         x = bx0 + (bx1 - bx0) * tt["mile"] / TOTAL; d.ellipse([x - 5, by - 5, x + 5, by + 5], fill=(255, 214, 0))
     d.text((W - 20, y0 - 6), "OpenFreeMap © OpenMapTiles · Data from OpenStreetMap · Route: OSRM · Preview, not for navigation",
-           font=F["small"], fill=(25, 25, 25), anchor="rd")
+           font=F["small"], fill=(25, 25, 25), anchor="rd", stroke_width=3, stroke_fill=(250, 246, 236, 235))
     sh = shot_at(t)
-    for c in crossings[1:]:                     # small "now entering" chip while the dot crosses a border
-        s = next((s for s in SEGS if s["kind"] == "travel" and s["m0"] <= c["mile"] <= s["m1"]), None)
-        if s is None or not c["state"]: continue
-        ts_ = np.linspace(s["t0"], s["t1"], 200); tc = float(np.interp(c["mile"], [hold_mile(s, x) for x in ts_], ts_))
+    for c, tc in CHIPS:                         # small "now entering" chip while the dot crosses a border
         if tc <= t < tc + 3.0 and sh["kind"] == "hold":
             a = min(1, (t - tc) / 0.3, (tc + 3.0 - t) / 0.4)
             w_ = max(d.textlength(c["state"].upper(), font=F["chip"]), 200) + 56
@@ -676,14 +735,14 @@ def overlays(fr, t, m):
         od.rounded_rectangle([W / 2 - 700, 150, W / 2 + 700, 370], radius=24, fill=(250, 244, 228, int(240 * a)), outline=(92, 66, 38, int(255 * a)), width=5)
         od.text((W / 2, 238), tt, font=ft, fill=(50, 34, 20, int(255 * a)), anchor="mm")
         od.text((W / 2, 322), ss, font=F["sub"], fill=(140, 30, 30, int(255 * a)), anchor="mm")
-        fr.alpha_composite(ov)
+        fr.paste(ov, (0, 0), ov)
     elif s["kind"] == "close":
         draw_card(d, s)
 
 # ====================================================================== frames
 WK = Worker()
 CACHE = {}
-STATS = dict(hold_prep=0.0, fly=0.0, compose=0.0, n_fly=0, n_hold=0)
+STATS = dict(hold_prep=0.0, fly=0.0, compose=0.0, overlay=0.0, n_fly=0, n_hold=0)
 def hold_L(i):
     if ("L", i) not in CACHE:
         for k in [k for k in CACHE if k[0] == "L"]: del CACHE[k]
@@ -694,29 +753,34 @@ def fly_img(i, k):
     key = ("F", i, round(k, 5))
     if key in CACHE: return CACHE[key]
     t0 = time.time(); fl = FLIGHTS[i]
-    WK.route("upto", fl["mile"], pitch=0.0); img = WK.render(flight_cam(fl, k))
+    WK.route("upto", fl["mile"], pitch=0.0, dot=i); img = WK.render(flight_cam(fl, k))
     STATS["fly"] += time.time() - t0; STATS["n_fly"] += 1
     if k in (0.0, 1.0): CACHE[key] = img
     return img
 BLEND = 0.35        # seconds: 3D buildings and the held view fade in/out instead of popping
+CHIPS = []          # (crossing, time the dot crosses it), computed once
+for c in crossings[1:]:
+    s = next((s for s in SEGS if s["kind"] == "travel" and s["m0"] <= c["mile"] <= s["m1"]), None)
+    if s is None or not c["state"]: continue
+    ts_ = np.linspace(s["t0"], s["t1"], 200); CHIPS.append((c, float(np.interp(c["mile"], [hold_mile(s, x) for x in ts_], ts_))))
 def frame(t):
     sh = shot_at(t); m = mile_at(t)
     if sh["kind"] == "fly":
         k = (t - sh["t0"]) / (sh["t1"] - sh["t0"]); img = fly_img(sh["fl"], min(max(k, 0.0), 1.0))
-        fr = Image.fromarray(img).convert("RGBA")
+        fr = Image.fromarray(np.ascontiguousarray(img))
     else:
         i = sh["seg"]; L = hold_L(i); t0 = time.time()
-        mask = L["diff"] & (L["wide"] <= m + 1e-6)
-        img = np.where(mask[..., None], L["full"], L["plain"])
+        img = L["plain"].copy(); y0, y1, x0, x1 = L["box"]
+        np.copyto(img[y0:y1, x0:x1], L["full"][y0:y1, x0:x1], where=(L["wide"][y0:y1, x0:x1] <= m + 1e-6)[..., None])
         if i > 0 and t - sh["t0"] < BLEND:
             u = sm((t - sh["t0"]) / BLEND); img = (fly_img(i - 1, 1.0) * (1 - u) + img * u).astype(np.uint8)
         elif i < len(SEGS) - 1 and sh["t1"] - t < BLEND:
             u = sm((sh["t1"] - t) / BLEND); img = (fly_img(i, 0.0) * (1 - u) + img * u).astype(np.uint8)
-        fr = Image.fromarray(img).convert("RGBA")
-        d = ImageDraw.Draw(fr); draw_marks(d, L, SEGS[i], m, t)
+        fr = Image.fromarray(img)
+        d = ImageDraw.Draw(fr, "RGBA"); draw_marks(d, L, SEGS[i], m, t)
         STATS["compose"] += time.time() - t0
-    overlays(fr, t, m)
-    return fr.convert("RGB")
+    t0 = time.time(); overlays(fr, t, m); STATS["overlay"] += time.time() - t0
+    return fr
 
 if A.stills:
     os.makedirs(f"{WORK}/stills", exist_ok=True)
@@ -750,5 +814,6 @@ for f in range(n):
     if f % 240 == 0: print(f"frame {f}/{n}  {time.time() - t0:.0f}s", flush=True)
 p.stdin.close(); p.wait(); WK.close()
 print(f"done: {A.out} ({DUR:.0f} s, {os.path.getsize(A.out) / 1e6:.1f} MB) in {time.time() - t0:.0f} s; "
-      f"holds {STATS['n_hold']} ({STATS['hold_prep']:.0f} s prep, {STATS['compose']:.0f} s compose), flight frames {STATS['n_fly']} ({STATS['fly']:.0f} s)")
+      f"holds {STATS['n_hold']} ({STATS['hold_prep']:.0f} s prep, {STATS['compose']:.0f} s compose), flight frames {STATS['n_fly']} ({STATS['fly']:.0f} s), "
+      f"overlays {STATS['overlay']:.0f} s")
 print(open(f"{WORK}/worker.log").read().strip()[-400:])
