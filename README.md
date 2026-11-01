@@ -51,12 +51,32 @@ into its cache folder (`~/.cache/routevid`) and calls `xvfb-run` itself.
 Leave out `--narrate` for a silent video with estimated pacing.
 
 **Options:** `--voice am_michael`, `--max-turns N`, `--turns-json file` (hand-fix the turn list),
-`--style <MapLibre style URL>`, `--crf 24`, `--maxrate 3M` (bitrate cap; flights over cities cost the most).
+`--style <MapLibre style URL>`, `--crf 24`, `--maxrate 3M` (bitrate cap; flights over cities cost the most),
+`--cache DIR` (saved with the trip), and the pack options below.
 
 **Check the narration:** `tools/check_audio.py` runs speech recognition over `narration.wav` and flags lines
 that don't match the script. It needs `sherpa-onnx-zipformer-small-en-2023-06-26` from the sherpa-onnx `asr-models`
 release. A narrated render writes `<work>/plan_check.json` for it, so just run
 `python3 tools/check_audio.py <work>/plan_check.json --asr-dir <model folder>`.
+
+## Render offline from an asset pack
+
+A **pack** is one ZIP holding everything a trip needs: the route, the place names, and every map tile, font and sprite its
+cameras will show. With a pack, the renderer needs no network at all. Packs let a machine with internet do the
+fetching and another machine without it do the rendering, and the same pack gives the same video on both.
+
+```bash
+python3 routevid3.py --work wise --make-pack wise-pack.zip          # online: fetch exactly what the video needs
+python3 routevid3.py --assets wise-pack.zip --work wise2 --stills 2,33
+python3 routevid3.py --work wise2 --out briefing.mp4                # no network used
+python3 routevid3.py --assets partial.zip --work w --asset-plan needs.json   # what a pack still lacks, and which camera needs it
+```
+
+Missing map data stops the video (`--on-missing fail`, the default); stills draw it blank instead. Either way every
+miss is listed in `<work>/missing.json`. `tools/onepass_to_pack.py` converts the browser fetcher's one-pass ZIPs.
+The format, the URL mapping and validation are specified in [docs/PACK_FORMAT.md](docs/PACK_FORMAT.md).
+A portable MapLibre bundle can be unpacked into `<cache>/node3` (`node_modules/` plus `lib/` for its shared libraries);
+the script adds `lib/` to the library path.
 
 ## Review the turn list
 
@@ -107,7 +127,11 @@ More detail: [docs/RESULTS.md](docs/RESULTS.md) (version history and measurement
 routevid3.py          the tool (one file)
 tools/narrate.py      local TTS (Kokoro / sherpa-onnx) -> narration.wav + exact sentence timestamps
 tools/check_audio.py  speech-recognition check of the narration against the script
-docs/                 AI-review handouts and measured results
+tools/pack.py         asset packs: URL mapping, validation, reading and writing (route-video-pack-v1)
+tools/onepass_to_pack.py  converts a browser one-pass ZIP into a pack
+data/admin1.geojson   US, Canada and Mexico state/province borders (Natural Earth, public domain)
+tests/                python3 -m unittest discover -s tests
+docs/                 pack format, AI-review handouts and measured results
 ```
 
 ## License
