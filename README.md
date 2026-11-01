@@ -46,8 +46,9 @@ render a different route from the one you reviewed. Pass an option again to chan
 On first run the script installs `@maplibre/maplibre-gl-native@6.4.1` (pinned: the version in the measurements)
 into its cache folder (`~/.cache/routevid`) and calls `xvfb-run` itself.
 
-**The voice:** download Kokoro v1.0 from Hugging Face `onnx-community/Kokoro-82M-v1.0-ONNX`. Put
-`onnx/model.onnx`, `tokenizer.json` and `voices/af_heart.bin` in one folder, and pass that folder with `--narrate`.
+**The voice:** download Kokoro v1.0 from Hugging Face `onnx-community/Kokoro-82M-v1.0-ONNX` and keep its layout:
+`<folder>/onnx/model.onnx`, `<folder>/tokenizer.json` and `<folder>/voices/af_heart.bin` (`tools/narrate.py` reads
+those exact subpaths; a flat folder doesn't work). Pass `<folder>` with `--narrate`.
 Leave out `--narrate` for a silent video with estimated pacing.
 
 **Options:** `--voice am_michael`, `--max-turns N`, `--turns-json file` (hand-fix the turn list),
@@ -72,7 +73,9 @@ python3 routevid3.py --work wise2 --out briefing.mp4                # no network
 python3 routevid3.py --assets partial.zip --work w --asset-plan needs.json   # what a pack still lacks, and which camera needs it
 ```
 
-Missing map data stops the video (`--on-missing fail`, the default); stills draw it blank instead. Either way every
+Missing map data stops the video (`--on-missing fail`, the default); stills and `--asset-plan` draw it blank instead.
+"Blank" differs by resource (empty tile, no glyphs, empty sprite), because native MapLibre segfaults or hangs on the
+wrong one; `tests/test_native_blank.py` checks it when native MapLibre is installed. Either way every
 miss is listed in `<work>/missing.json`. `tools/onepass_to_pack.py` converts the browser fetcher's one-pass ZIPs.
 The format, the URL mapping and validation are specified in [docs/PACK_FORMAT.md](docs/PACK_FORMAT.md).
 A portable MapLibre bundle can be unpacked into `<cache>/node3` (`node_modules/` plus `lib/` for its shared libraries);

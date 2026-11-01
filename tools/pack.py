@@ -64,6 +64,14 @@ function packPath(url){const raw=url.split(/[?#]/)[0].replace(/^[a-z][a-z0-9+.-]
  return ['http',u.hostname.toLowerCase(),...parts].join('/');}
 const TILE_RE=/^http\/([^/]+)\/(.*?)\/?([^/]+)\/(\d+)\/(\d+)\/(\d+)\.([A-Za-z0-9]+)$/;
 function tileKey(p){const m=TILE_RE.exec(p);return m?`${m[1]}/${m[2]}/${m[4]}/${m[5]}/${m[6]}.${m[7]}`:null;}
+// The answer for a resource that isn't there (a pack miss drawn blank, or an HTTP 204/404). Native MapLibre 6.4.1
+// can't take one answer for all: {} for glyphs segfaults, {} for a sprite hangs the render, and an empty buffer for a
+// raster tile or a sprite image stops it with "unsupported image type" (tests/test_native_blank.py).
+const PNG_1PX=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNgYGBgAAAABQABeqhXUAAAAABJRU5ErkJggg==','base64');
+function blankAnswer(url){const p=url.split(/[?#]/)[0];
+ if(/\/\d+-\d+\.pbf$/i.test(p))return {data:Buffer.alloc(0)};                       // glyph range: no glyphs
+ if(/sprite/i.test(p))return {data:/\.json$/i.test(p)?Buffer.from('{}'):PNG_1PX};    // sprite: no icons
+ return {};}                                                                          // tiles: no data
 """
 
 

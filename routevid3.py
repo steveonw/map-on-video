@@ -575,7 +575,8 @@ if not os.path.exists(_pkg) or json.load(open(_pkg)).get("version") != MBGL:
 # exactly W*H*4 raw RGBA bytes on stdout, so NOTHING else may ever be written to stdout. (xvfb-run runs its command
 # with 2>&1, so the worker is started through `sh -c 'exec node ... 2>>worker.log'` to keep stderr out of the pipe.)
 # Resources: online, a sha1(URL) disk cache in front of HTTPS; with a pack, files from the pack only (packPath, plus
-# a version-free tile index), and misses are logged with the camera that asked for them, then answered blank.
+# a version-free tile index), and misses are logged with the camera that asked for them, then answered blank
+# (blankAnswer in tools/pack.py: the safe blank differs for tiles, glyphs and sprites).
 WORKER = r"""
 const mbgl=require('@maplibre/maplibre-gl-native');const fs=require('fs'),path=require('path'),https=require('https'),crypto=require('crypto'),readline=require('readline');
 const CFG=JSON.parse(fs.readFileSync(process.argv[2]));const CACHE=CFG.cache;fs.mkdirSync(CACHE,{recursive:true});
@@ -586,11 +587,11 @@ const note=(file,o)=>{if(file)fs.appendFileSync(file,JSON.stringify(o)+'\n');};
 function fromPack(url){const p=packPath(url);let f=path.join(CFG.pack_root,p);if(fs.existsSync(f))return fs.readFileSync(f);
  const k=tileKey(p);if(k&&TILES[k])return fs.readFileSync(path.join(CFG.pack_root,TILES[k]));return null;}
 function get(url){note(CFG.record_log,{url,ctx});
- if(CFG.pack_root){const b=fromPack(url);if(b)return Promise.resolve({data:b});misses++;note(CFG.missing_log,{url,ctx});return Promise.resolve({});}
+ if(CFG.pack_root){const b=fromPack(url);if(b)return Promise.resolve({data:b});misses++;note(CFG.missing_log,{url,ctx});return Promise.resolve(blankAnswer(url));}
  const f=path.join(CACHE,crypto.createHash('sha1').update(url).digest('hex'));
  if(fs.existsSync(f))return Promise.resolve({data:fs.readFileSync(f)});net++;
  return new Promise((res,rej)=>{const go=n=>https.get(url,{headers:{'User-Agent':CFG.ua}},r=>{const b=[];r.on('data',d=>b.push(d));r.on('end',()=>{const data=Buffer.concat(b);
-   if(r.statusCode===200){fs.writeFileSync(f,data);res({data});}else if(r.statusCode===204||r.statusCode===404)res({data:Buffer.alloc(0)});else if(n>0)setTimeout(()=>go(n-1),1500);else rej(new Error('HTTP '+r.statusCode+' '+url));});}).on('error',e=>n>0?setTimeout(()=>go(n-1),1500):rej(e));go(3);});}
+   if(r.statusCode===200){fs.writeFileSync(f,data);res({data});}else if(r.statusCode===204||r.statusCode===404)res(blankAnswer(url));else if(n>0)setTimeout(()=>go(n-1),1500);else rej(new Error('HTTP '+r.statusCode+' '+url));});}).on('error',e=>n>0?setTimeout(()=>go(n-1),1500):rej(e));go(3);});}
 const req=(r,cb)=>get(r.url).then(x=>cb(null,x)).catch(e=>{console.error('request failed',r.url,e.message);cb(e);});
 const style=JSON.parse(fs.readFileSync(CFG.style));
 const map=new mbgl.Map({request:req,ratio:%RATIO%});map.load(style);
