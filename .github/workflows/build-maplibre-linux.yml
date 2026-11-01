@@ -1,0 +1,74 @@
+name: Build Linux MapLibre native bundle
+
+on:
+  push:
+    branches:
+      - openai-offline-handoff
+    paths:
+      - '.github/workflows/build-maplibre-linux.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install system OpenGL runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopengl0 libgl1 libegl1 libgles2 libglib2.0-0 libicu74
+          ldconfig -p | grep 'libOpenGL.so.0'
+          ldconfig -p | grep 'libicuuc.so.74'
+      - name: Install native renderer
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p bundle
+          cd bundle
+          npm init -y
+          npm install --no-audit --no-fund '@maplibre/maplibre-gl-native@6.4.1'
+      - name: Verify native binary and loader
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd bundle
+          node -e "const m=require('@maplibre/maplibre-gl-native'); console.log('MapLibre loaded:', Object.keys(m).slice(0,12)); if(typeof m.Map!=='function') process.exit(1)"
+          find node_modules -type f -name '*.node' -print | tee native-binaries.txt
+          test -s native-binaries.txt
+          node --version > node-version.txt
+          uname -a > platform.txt
+      - name: Bundle runtime shared libraries for other Linux distributions
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p bundle/lib
+          binary="$(find bundle/node_modules -type f -name '*.node' | head -1)"
+          ldd "$binary" | tee bundle/ldd-native.txt
+          for pattern in 'libicuuc.so.74' 'libicui18n.so.74' 'libicudata.so.74' 'libjpeg.so.8' 'libpng16.so.16'; do
+            src="$(ldconfig -p | awk -v pat="$pattern" '$1 == pat {print $NF; exit}')"
+            test -n "$src"
+            cp -L "$src" "bundle/lib/$pattern"
+          done
+          env LD_LIBRARY_PATH="$PWD/bundle/lib" node -e "const m=require('./bundle/node_modules/@maplibre/maplibre-gl-native'); if(typeof m.Map!=='function') process.exit(1); console.log('portable bundle OK')"
+      - name: Pack complete node_modules
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tar -C bundle -czf maplibre-native-linux-x64.tar.gz node_modules lib ldd-native.txt package.json package-lock.json native-binaries.txt node-version.txt platform.txt
+          ls -lh maplibre-native-linux-x64.tar.gz
+      - name: Upload tested bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: maplibre-native-linux-x64
+          path: maplibre-native-linux-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
