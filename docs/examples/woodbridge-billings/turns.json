@@ -1,0 +1,15 @@
+[
+ {"steps":[0,8],"title":"START","text":"Head out on US-1 and Gordon Boulevard, then take I-95 North"},
+ {"steps":[9,10],"title":"Springfield, VA","text":"Keep right onto I-495 North (Capital Beltway) toward Tysons Corner"},
+ {"steps":[13],"title":"Bethesda, MD","text":"Keep left onto the I-270 Spur toward Rockville and Frederick"},
+ {"steps":[15,16],"title":"Frederick, MD","text":"Take the exit for I-70 West toward Hagerstown"},
+ {"steps":[22],"title":"Breezewood, PA","text":"Follow I-70 West through Breezewood onto the Pennsylvania Turnpike toward Pittsburgh"},
+ {"steps":[25],"title":"Lordstown, OH","text":"Keep right to stay on the Ohio Turnpike, now I-80 West"},
+ {"steps":[28],"title":"Hammond, IN","text":"Continue on I-90 West onto the Chicago Skyway"},
+ {"steps":[33],"title":"Chicago, IL","text":"Keep left onto the Dan Ryan Expressway, I-90 and I-94 West"},
+ {"steps":[53],"title":"Portage, WI","text":"Keep left on I-90 and I-94 West as I-39 splits off"},
+ {"steps":[54],"title":"Tomah, WI","text":"Keep right onto I-94 West toward Eau Claire"},
+ {"steps":[55,56],"title":"Woodbury, MN","text":"Take the exit for I-694 North around Saint Paul"},
+ {"steps":[59],"title":"Brooklyn Center, MN","text":"Continue onto I-94 West toward Saint Cloud"},
+ {"steps":[61,66],"title":"DESTINATION","text":"Take the I-90 Business exit, then turn left on First Avenue North into Billings"}
+]
