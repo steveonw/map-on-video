@@ -18,7 +18,7 @@ Needs: node + npm, xvfb (xvfb-run), libopengl0; Python numpy, scipy, pillow, geo
   ... --plan-only        route, key turns, borders and the narration script; nothing drawn
   ... --stills 3,20,40   a few frames as JPGs instead of the video
 """
-import argparse, json, math, os, re, shutil, subprocess, sys, time, urllib.parse, urllib.request
+import argparse, hashlib, json, math, os, re, shutil, subprocess, sys, time, urllib.parse, urllib.request
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -41,11 +41,19 @@ ap.add_argument("--max-turns", type=int); ap.add_argument("--turns-json")
 ap.add_argument("--style", default="https://tiles.openfreemap.org/styles/liberty")
 ap.add_argument("--crf", type=int, default=24); ap.add_argument("--maxrate", default="3M", help="x264 bitrate cap (flights over cities are costly)")
 ap.add_argument("--plan-only", action="store_true"); ap.add_argument("--stills")
+ap.add_argument("--assets", metavar="PACK", help="route-video-pack-v1 ZIP or folder: render from it with no network (docs/PACK_FORMAT.md)")
+ap.add_argument("--on-missing", choices=["fail", "blank"],
+                help="with --assets, a map resource the pack lacks: stop (default for the video) or draw it blank (default for --stills)")
+ap.add_argument("--asset-plan", metavar="NEEDS_JSON", help="list every map resource each camera needs (route-video-needs-v1), render nothing")
+ap.add_argument("--make-pack", metavar="PACK_ZIP", help="online only: fetch everything the video needs and write a pack for offline renders")
 A = ap.parse_args()
-WORK = os.path.abspath(A.work); os.makedirs(WORK, exist_ok=True); os.makedirs(A.cache, exist_ok=True)
+WORK = os.path.abspath(A.work); os.makedirs(WORK, exist_ok=True)
+sys.path.insert(0, _here)
+from tools import pack as packlib
 # The trip's settings are saved in <work>/args.json by the first run, so later steps (--stills, render)
 # need only --work and can't silently render a different route from the one that was reviewed.
-SAVED = ["src", "dst", "from_label", "to_label", "contact", "narrate", "voice", "max_turns", "turns_json", "style", "crf", "maxrate"]
+SAVED = ["src", "dst", "from_label", "to_label", "contact", "narrate", "voice", "max_turns", "turns_json", "style", "crf", "maxrate",
+         "cache", "assets"]
 _defaults = {a.dest: a.default for a in ap._actions}
 for a in ap._actions: a.default = argparse.SUPPRESS       # parse again with no defaults: what remains was typed
 _given = set(vars(ap.parse_args()))
@@ -59,14 +67,31 @@ if _old:
         if k in _given and k in _old and _old[k] != getattr(A, k): print(f"note: --{k.replace('_', '-')} changed since {_argf} was saved")
         elif k not in _given and k in _old: setattr(A, k, _old[k])
     if not _given & set(SAVED): print(f"using the trip saved in {_argf}")
-if not (A.src and A.dst and A.contact):
-    ap.error("give --from, --to and --contact (or --work of a trip that was already planned)")
+A.cache = os.path.abspath(os.path.expanduser(A.cache)); os.makedirs(A.cache, exist_ok=True)
+PACK = None
+if A.assets:                    # offline: everything comes from the pack, nothing from the network
+    if A.make_pack: ap.error("--make-pack fetches from the network; it can't be combined with --assets")
+    A.assets = os.path.abspath(os.path.expanduser(A.assets))
+    try: PACK = packlib.open_pack(A.assets, f"{A.cache}/packs")
+    except (packlib.PackError, OSError, ValueError) as e: raise SystemExit(f"pack rejected: {e}")
+    _pr = PACK.manifest["route"]
+    for k, v in (("src", _pr["from"]), ("dst", _pr["to"])):
+        if not getattr(A, k): setattr(A, k, v)
+        elif getattr(A, k) != v: ap.error(f"--{'from' if k == 'src' else 'to'} {getattr(A, k)!r} differs from the pack's {v!r}")
+    print(f"pack: {A.assets} ({len(PACK.manifest['files'])} files, made by {PACK.manifest.get('created_by', '?')})")
+if not (A.src and A.dst and (A.contact or PACK)):
+    ap.error("give --from, --to and --contact (or --work of a trip that was already planned, or --assets)")
 json.dump({k: getattr(A, k) for k in SAVED}, open(_argf, "w"), indent=1)
 UA = f"RouteVideo/3.0 ({A.contact})"
+PLANNING = bool(A.asset_plan or A.make_pack)
+if PLANNING: A.narrate = None    # camera paths don't depend on the voice; skip it (not saved to args.json)
+ON_MISSING = A.on_missing or ("blank" if (A.stills or PLANNING) else "fail")
+if PLANNING: ON_MISSING = "blank"
 
 # ====================================================================== web helpers
 def http(url, params=None, binary=False, retries=4):
     if params: url += "?" + urllib.parse.urlencode(params)
+    if PACK: raise RuntimeError(f"offline (--assets): no network request allowed: {url}")
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     for k in range(retries):
         try:
@@ -83,6 +108,10 @@ def slug(s): return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")[:60]
 def geocode(q):
     m = re.match(r"^\s*(-?\d+(\.\d+)?)\s*,\s*(-?\d+(\.\d+)?)\s*$", q)
     if m: return float(m.group(3)), float(m.group(1))
+    if PACK:
+        v = PACK.data("geocode.json", {}).get(q)
+        if not v: raise SystemExit(f"the pack has no geocode for {q!r} (data/geocode.json)")
+        return float(v[0]), float(v[1])
     def go():
         time.sleep(1.1)
         r = http("https://nominatim.openstreetmap.org/search", {"q": q, "format": "json", "limit": 1})
@@ -98,7 +127,14 @@ US_ABBR = {"Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "
            "Utah": "UT", "Vermont": "VT", "Virginia": "VA", "Washington": "WA", "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
            "District of Columbia": "DC"}
 ABBR_US = {v: k for k, v in US_ABBR.items()}
+MISSING_NAMES = []
 def place_name(lon, lat):
+    """'Town, ST' near a point, or "" when unknown (offline without it in the pack): never coordinates,
+    which would end up spoken."""
+    if PACK:
+        v = PACK.data("reverse.json", {}).get(packlib.reverse_key(lon, lat), "")
+        if not v: MISSING_NAMES.append(packlib.reverse_key(lon, lat))
+        return v
     def go():
         time.sleep(1.1)
         r = http("https://nominatim.openstreetmap.org/reverse", {"lat": lat, "lon": lon, "format": "json", "zoom": 12})
@@ -111,10 +147,19 @@ def place_name(lon, lat):
 # ====================================================================== route
 slon, slat = geocode(A.src); dlon, dlat = geocode(A.dst)
 FROM, TO = A.from_label or A.src, A.to_label or A.dst
-route = cached_json(f"osrm_{slon:.5f}_{slat:.5f}_{dlon:.5f}_{dlat:.5f}", lambda: http(
-    f"https://router.project-osrm.org/route/v1/driving/{slon},{slat};{dlon},{dlat}",
-    {"overview": "full", "geometries": "geojson", "steps": "true"}))
+if PACK:
+    route = PACK.data("route.json")
+    if not route: raise SystemExit("the pack has no route (data/route.json)")
+else:
+    route = cached_json(f"osrm_{slon:.5f}_{slat:.5f}_{dlon:.5f}_{dlat:.5f}", lambda: http(
+        f"https://router.project-osrm.org/route/v1/driving/{slon},{slat};{dlon},{dlat}",
+        {"overview": "full", "geometries": "geojson", "steps": "true"}))
 if route.get("code") != "Ok": raise SystemExit(f"router error: {route.get('code')}")
+if PACK:                         # the route must start and end where the pack's geocodes say
+    _c = route["routes"][0]["geometry"]["coordinates"]
+    for (lo_, la_), (glo, gla), nm in ((_c[0], (slon, slat), "start"), (_c[-1], (dlon, dlat), "end")):
+        if math.hypot((lo_ - glo) * math.cos(math.radians(gla)), la_ - gla) * 111 > 2:
+            raise SystemExit(f"the pack's route {nm} is more than 2 km from its geocode; the pack mixes two trips")
 R = route["routes"][0]
 coords = np.array(R["geometry"]["coordinates"])
 la1, la2 = np.radians(coords[:-1, 1]), np.radians(coords[1:, 1])
@@ -230,17 +275,24 @@ for t in turns:
     t["text"] = re.sub(r"\s+", " ", t["text"]).strip()
 turns[-1]["mile"] = TOTAL
 
-# ====================================================================== borders (Natural Earth admin-1, from GitHub)
+# ====================================================================== borders (Natural Earth admin-1: bundled data/admin1.geojson, else GitHub)
 crossings = [dict(mile=0.0, state="")]
+ADMIN1 = os.path.join(_here, "data", "admin1.geojson")    # US, Canada, Mexico; bundled so no download is needed
 try:
-    NE = f"{A.cache}/ne"; os.makedirs(NE, exist_ok=True)
-    base = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/10m_cultural/ne_10m_admin_1_states_provinces"
-    for ext in ("shp", "shx", "dbf", "prj"):
-        if not os.path.exists(f"{NE}/admin1.{ext}"): open(f"{NE}/admin1.{ext}", "wb").write(http(f"{base}.{ext}", binary=True))
     import geopandas as gpd
     sm_ = np.arange(0, TOTAL, max(0.5, TOTAL / 4000))
     lo, la = np.interp(sm_, cum, coords[:, 0]), np.interp(sm_, cum, coords[:, 1])
-    adm = gpd.read_file(f"{NE}/admin1.shp", bbox=(lo.min() - 1, la.min() - 1, lo.max() + 1, la.max() + 1))[["name", "geometry"]]
+    if os.path.exists(ADMIN1):
+        adm = gpd.read_file(ADMIN1, bbox=(lo.min() - 1, la.min() - 1, lo.max() + 1, la.max() + 1))[["name", "geometry"]]
+        _covered = adm.union_all().buffer(0.05).contains(gpd.points_from_xy(lo, la)).mean() if len(adm) else 0
+    else: _covered = 0
+    if _covered < 0.98:          # the route leaves North America: the full Natural Earth file (online only)
+        if PACK: raise RuntimeError("route is outside the bundled North American border data")
+        NE = f"{A.cache}/ne"; os.makedirs(NE, exist_ok=True)
+        base = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/10m_cultural/ne_10m_admin_1_states_provinces"
+        for ext in ("shp", "shx", "dbf", "prj"):
+            if not os.path.exists(f"{NE}/admin1.{ext}"): open(f"{NE}/admin1.{ext}", "wb").write(http(f"{base}.{ext}", binary=True))
+        adm = gpd.read_file(f"{NE}/admin1.shp", bbox=(lo.min() - 1, la.min() - 1, lo.max() + 1, la.max() + 1))[["name", "geometry"]]
     j = gpd.sjoin(gpd.GeoDataFrame(geometry=gpd.points_from_xy(lo, la), crs=4326), adm.to_crs(4326), how="left", predicate="within")
     names = j.sort_index()["name"].groupby(level=0).first().ffill().bfill().fillna("").tolist()
     raw, cur = [], None
@@ -325,7 +377,7 @@ for ti, t in enumerate(turns):
     if ti < len(turns) - 1:
         b = min(TOTAL, t["mile"] + 0.3)
         SEGS.append(dict(kind="close", turn=ti, m0=a, m1=b, title=f"Turn {ti}: {t['text']}",
-                         text=f"At mile {words(t['mile'])}, near {speak(t['title'])}: {speak(t['text'])}."))
+                         text=f"At mile {words(t['mile'])}" + (f", near {speak(t['title'])}" if t["title"] else "") + f": {speak(t['text'])}."))
     else:
         b = TOTAL
         a = max(a, TOTAL - 0.6)          # the arrival close-up shows the last stretch, framed tight
@@ -336,6 +388,8 @@ SEGS.append(dict(kind="outro", m0=TOTAL, m1=TOTAL, title="Arrived", text=f"You h
 print(f"key turns ({nkey} + start/arrive):")
 for i, t in enumerate(turns): print(f"  {i:2d}  mile {t['mile']:7.1f}  {t['title']:<26} {t['text']}")
 print("regions:", [(round(c['mile']), c['state']) for c in crossings])
+if MISSING_NAMES: print(f"note: no place name in the pack for {len(MISSING_NAMES)} turn(s) ({', '.join(MISSING_NAMES)}); "
+                        "their lines and cards leave the name out (add them to data/reverse.json)")
 print("script:"); [print(f"  [{s['kind']:<6}] {s['text']}") for s in SEGS]
 # ====================================================================== fonts and turn cards (checked before any drawing)
 IF = "/usr/share/fonts/opentype/inter/Inter-{}.otf"
@@ -510,17 +564,35 @@ NODE = f"{A.cache}/node3"; os.makedirs(NODE, exist_ok=True)
 MBGL = "6.4.1"            # the version every number in docs/RESULTS.md was measured with; pinned so installs can't drift
 _pkg = f"{NODE}/node_modules/@maplibre/maplibre-gl-native/package.json"
 if not os.path.exists(_pkg) or json.load(open(_pkg)).get("version") != MBGL:
-    subprocess.run(["npm", "install", "--prefix", NODE, f"@maplibre/maplibre-gl-native@{MBGL}", "--silent"], check=True)
+    try:
+        if PACK: raise RuntimeError("offline")
+        subprocess.run(["npm", "install", "--prefix", NODE, f"@maplibre/maplibre-gl-native@{MBGL}", "--silent"], check=True)
+    except Exception:
+        raise SystemExit(f"native MapLibre {MBGL} is not installed in {NODE}/node_modules and can't be installed here.\n"
+                         f"Unpack a portable bundle there (node_modules/ plus lib/ with its shared libraries), e.g. the\n"
+                         f"maplibre-native-linux-x64 artifact, or run: npm install --prefix {NODE} @maplibre/maplibre-gl-native@{MBGL}")
+# The worker: one long-lived native MapLibre map. Commands arrive as JSON lines on stdin; each render answers with
+# exactly W*H*4 raw RGBA bytes on stdout, so NOTHING else may ever be written to stdout. (xvfb-run runs its command
+# with 2>&1, so the worker is started through `sh -c 'exec node ... 2>>worker.log'` to keep stderr out of the pipe.)
+# Resources: online, a sha1(URL) disk cache in front of HTTPS; with a pack, files from the pack only (packPath, plus
+# a version-free tile index), and misses are logged with the camera that asked for them, then answered blank.
 WORKER = r"""
 const mbgl=require('@maplibre/maplibre-gl-native');const fs=require('fs'),path=require('path'),https=require('https'),crypto=require('crypto'),readline=require('readline');
-const [styleFile,CACHE,UA]=process.argv.slice(2);fs.mkdirSync(CACHE,{recursive:true});
-let net=0;
-function get(url){const f=path.join(CACHE,crypto.createHash('sha1').update(url).digest('hex'));
+const CFG=JSON.parse(fs.readFileSync(process.argv[2]));const CACHE=CFG.cache;fs.mkdirSync(CACHE,{recursive:true});
+%PACK_JS%
+const TILES=CFG.tile_index?JSON.parse(fs.readFileSync(CFG.tile_index)):{};
+let net=0,ctx='',misses=0;
+const note=(file,o)=>{if(file)fs.appendFileSync(file,JSON.stringify(o)+'\n');};
+function fromPack(url){const p=packPath(url);let f=path.join(CFG.pack_root,p);if(fs.existsSync(f))return fs.readFileSync(f);
+ const k=tileKey(p);if(k&&TILES[k])return fs.readFileSync(path.join(CFG.pack_root,TILES[k]));return null;}
+function get(url){note(CFG.record_log,{url,ctx});
+ if(CFG.pack_root){const b=fromPack(url);if(b)return Promise.resolve({data:b});misses++;note(CFG.missing_log,{url,ctx});return Promise.resolve({});}
+ const f=path.join(CACHE,crypto.createHash('sha1').update(url).digest('hex'));
  if(fs.existsSync(f))return Promise.resolve({data:fs.readFileSync(f)});net++;
- return new Promise((res,rej)=>{const go=n=>https.get(url,{headers:{'User-Agent':UA}},r=>{const b=[];r.on('data',d=>b.push(d));r.on('end',()=>{const data=Buffer.concat(b);
+ return new Promise((res,rej)=>{const go=n=>https.get(url,{headers:{'User-Agent':CFG.ua}},r=>{const b=[];r.on('data',d=>b.push(d));r.on('end',()=>{const data=Buffer.concat(b);
    if(r.statusCode===200){fs.writeFileSync(f,data);res({data});}else if(r.statusCode===204||r.statusCode===404)res({data:Buffer.alloc(0)});else if(n>0)setTimeout(()=>go(n-1),1500);else rej(new Error('HTTP '+r.statusCode+' '+url));});}).on('error',e=>n>0?setTimeout(()=>go(n-1),1500):rej(e));go(3);});}
-const req=(r,cb)=>get(r.url).then(x=>cb(null,x)).catch(e=>cb(e));
-const style=JSON.parse(fs.readFileSync(styleFile));
+const req=(r,cb)=>get(r.url).then(x=>cb(null,x)).catch(e=>{console.error('request failed',r.url,e.message);cb(e);});
+const style=JSON.parse(fs.readFileSync(CFG.style));
 const map=new mbgl.Map({request:req,ratio:%RATIO%});map.load(style);
 const render=(m,cam)=>new Promise((res,rej)=>m.render({...cam,width:%VW%,height:%VH%},(e,b)=>e?rej(e):res(b)));
 const out=b=>new Promise(r=>process.stdout.write(b,r));
@@ -528,7 +600,8 @@ const rl=readline.createInterface({input:process.stdin});const q=[];let busy=fal
 rl.on('line',l=>{q.push(JSON.parse(l));pump();});
 async function pump(){if(busy)return;busy=true;while(q.length){const c=q.shift();
  try{
-  if(c.cmd==='route'){ // which part of the route is drawn: none / all / up to a mile
+  if(c.cmd==='ctx'){ctx=c.v;}
+  else if(c.cmd==='route'){ // which part of the route is drawn: none / all / up to a mile
     const red=c.mode==='none'?['==',['get','m1'],-1]:c.mode==='all'?['>=',['get','m1'],-1]:['<=',['get','m1'],c.mile+1e-9];
     const ahead=c.mode==='upto'?['>=',['get','m0'],c.mile-1e-9]:['>=',['get','m1'],-1];
     for(const id of ['route-casing','route-line'])map.setFilter(id,red);map.setFilter('route-ahead',ahead);
@@ -537,14 +610,20 @@ async function pump(){if(busy)return;busy=true;while(q.length){const c=q.shift()
   }else if(c.cmd==='render'){await out(await render(map,c.cam));}
   else if(c.cmd==='id'){const idStyle=JSON.parse(fs.readFileSync(c.style));const m=new mbgl.Map({request:(r,cb)=>cb(null,{data:Buffer.alloc(0)}),ratio:%RATIO%});
     m.load(idStyle);const b=await render(m,c.cam);m.release();await out(b);}
-  else if(c.cmd==='stats'){console.error(JSON.stringify({net,rss:Math.round(process.memoryUsage().rss/1e6)}));}
- }catch(e){console.error('worker error',e.message);process.exit(2);}}busy=false;}
+  else if(c.cmd==='stats'){console.error(JSON.stringify({net,misses,rss:Math.round(process.memoryUsage().rss/1e6)}));}
+ }catch(e){console.error('worker error ['+ctx+']',e.message);process.exit(2);}}busy=false;}
 rl.on('close',()=>{const w=()=>{if(busy||q.length)return setTimeout(w,50);map.release();process.exit(0);};w();});
-""".replace("%RATIO%", str(RATIO)).replace("%VW%", str(VW)).replace("%VH%", str(VH))
+""".replace("%PACK_JS%", packlib.PACK_JS).replace("%RATIO%", str(RATIO)).replace("%VW%", str(VW)).replace("%VH%", str(VH))
 open(f"{NODE}/worker.js", "w").write(WORKER)
 
 # style: OpenFreeMap + route pieces split at every segment boundary + curated labels
-style = cached_json("style_" + slug(A.style), lambda: http(A.style))
+if PACK:
+    _sb = PACK.get(A.style)
+    if _sb is None: raise SystemExit(f"the pack has no style for {A.style} ({packlib.url_to_path(A.style)})")
+    style = json.loads(_sb)
+else:
+    style = cached_json("style_" + slug(A.style), lambda: http(A.style))
+STYLE_RAW = json.loads(json.dumps(style))          # unmodified, for --make-pack
 for l in style["layers"]:
     if l["type"] == "symbol" and not re.search(r"city|town|state|country|shield|village", l["id"]): l.setdefault("layout", {})["visibility"] = "none"
 cuts = sorted({0.0, TOTAL} | {float(s["m0"]) for s in SEGS} | {float(s["m1"]) for s in SEGS})
@@ -588,15 +667,48 @@ EXTRUDE = [l["id"] for l in style["layers"] if l["type"] == "fill-extrusion"]
 json.dump(style, open(f"{WORK}/style.json", "w"))
 
 class Worker:
-    def __init__(self):
-        self.log = open(f"{WORK}/worker.log", "w")
-        self.p = subprocess.Popen(["xvfb-run", "-a", "-s", "-screen 0 1920x1080x24", "node", f"{NODE}/worker.js", f"{WORK}/style.json", f"{A.cache}/res", UA],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, cwd=NODE, env={**os.environ, "LIBGL_ALWAYS_SOFTWARE": "1"})
-        self.mode = None
+    def __init__(self, record=False):
+        self.logf = f"{WORK}/worker.log"; open(self.logf, "w").close()
+        self.miss_f = f"{WORK}/missing.jsonl"; open(self.miss_f, "w").close()
+        self.rec_f = f"{WORK}/requests.jsonl" if record else None
+        if self.rec_f: open(self.rec_f, "w").close()
+        cfg = dict(style=f"{WORK}/style.json", cache=f"{A.cache}/res", ua=UA, record_log=self.rec_f,
+                   pack_root=str(PACK.root) if PACK else None, tile_index=str(PACK.index_file) if PACK else None,
+                   missing_log=self.miss_f if PACK else None)
+        json.dump(cfg, open(f"{WORK}/worker.json", "w"), indent=1)
+        env = {**os.environ, "LIBGL_ALWAYS_SOFTWARE": "1", "RV_LOG": self.logf}
+        if os.path.isdir(f"{NODE}/lib"):        # portable bundles ship their shared libraries here
+            env["LD_LIBRARY_PATH"] = f"{NODE}/lib" + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+        self.p = subprocess.Popen(["xvfb-run", "-a", "-s", "-screen 0 1920x1080x24", "sh", "-c", 'exec node "$0" "$1" 2>>"$RV_LOG"',
+                                   f"{NODE}/worker.js", f"{WORK}/worker.json"],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(self.logf, "a"), cwd=NODE, env=env)
+        self.mode = None; self.ctx_v = None; self.seen_miss = 0
     def send(self, obj): self.p.stdin.write((json.dumps(obj) + "\n").encode()); self.p.stdin.flush()
+    def ctx(self, v):
+        if v != self.ctx_v: self.send({"cmd": "ctx", "v": v}); self.ctx_v = v
+    def missing(self):
+        """{url: [camera labels]} for every resource the pack lacked so far."""
+        out = {}
+        for l in open(self.miss_f):
+            if l.strip():
+                o = json.loads(l); out.setdefault(o["url"], [])
+                if o["ctx"] not in out[o["url"]]: out[o["url"]].append(o["ctx"])
+        return out
+    def fail_report(self, why):
+        miss = self.missing()
+        if miss:
+            json.dump(miss, open(f"{WORK}/missing.json", "w"), indent=1)
+            print(f"{why}: the pack lacks {len(miss)} resource(s) (list with the cameras that need them: {WORK}/missing.json):")
+            for u, c in list(miss.items())[:8]: print(f"  {u}   <- {c[0]}" + (f" (+{len(c) - 1} more)" if len(c) > 1 else ""))
+            print("Make the list for a top-up with --asset-plan, or draw them blank with --on-missing blank.")
+        log = open(self.logf).read().strip()
+        if log: print("worker.log:\n" + log[-1500:])
+        raise SystemExit(why)
     def read(self):
         n = W * H * 4; buf = self.p.stdout.read(n)
-        if len(buf) != n: raise SystemExit(f"map worker died (see {WORK}/worker.log)")
+        if len(buf) != n: self.fail_report(f"map worker stopped (see {self.logf})")
+        if PACK and ON_MISSING == "fail" and os.path.getsize(self.miss_f) > self.seen_miss:
+            self.fail_report("missing map data")
         return np.frombuffer(buf, np.uint8).reshape(H, W, 4)[..., :3]
     def route(self, mode, mile=0.0, pitch=0.0, dot=-1):
         key = (mode, round(mile, 6), pitch > 0, dot)
@@ -605,7 +717,17 @@ class Worker:
     def render(self, cam): self.send({"cmd": "render", "cam": cam}); return self.read()
     def id_render(self, style_path, cam): self.send({"cmd": "id", "style": style_path, "cam": cam}); return self.read()
     def close(self):
-        self.send({"cmd": "stats"}); self.p.stdin.close(); self.p.wait(); self.log.close()
+        self.send({"cmd": "stats"}); self.p.stdin.close(); self.p.wait()
+        miss = self.missing()
+        if miss:
+            json.dump(miss, open(f"{WORK}/missing.json", "w"), indent=1)
+            print(f"note: {len(miss)} map resource(s) were missing from the pack and drawn blank; list: {WORK}/missing.json")
+        elif os.path.exists(f"{WORK}/missing.json"): os.remove(f"{WORK}/missing.json")
+
+def hold_label(i):
+    s = SEGS[i]
+    return f"hold {i} {s['kind']}" + (f" turn {s['turn']}" if s["kind"] == "close" else "")
+def flight_label(i): return f"flight {i} ({SEGS[i]['kind']} {i} -> {SEGS[i + 1]['kind']} {i + 1})"
 
 # ====================================================================== held views: plain + full route + ID image
 def hold_layers(seg):
@@ -683,7 +805,7 @@ def draw_marks(d, L, seg, m, t):
 def draw_card(d, seg):
     tt = turns[seg["turn"]]
     head = ("START  ·  " + FROM.upper()) if seg["turn"] == 0 else ("DESTINATION  ·  " + TO.upper()) if seg["turn"] == len(turns) - 1 \
-        else f"TURN {seg['turn']} OF {nkey}  ·  MILE {tt['mile']:,.0f}  ·  {tt['title'].upper()}"
+        else f"TURN {seg['turn']} OF {nkey}  ·  MILE {tt['mile']:,.0f}" + (f"  ·  {tt['title'].upper()}" if tt["title"] else "")
     f, lines = card_fit(tt["text"]); lh = int(f.size * 1.22)
     d.rounded_rectangle([28, 24, 28 + max([f.getlength(l) for l in lines] + [F["head"].getlength(head)]) + 64, 24 + 70 + lh * len(lines)], radius=20, fill=(28, 22, 16))
     d.text((60, 42), head, font=F["head"], fill=(255, 214, 0))
@@ -740,12 +862,13 @@ def overlays(fr, t, m):
         draw_card(d, s)
 
 # ====================================================================== frames
-WK = Worker()
+WK = Worker(record=PLANNING)
 CACHE = {}
 STATS = dict(hold_prep=0.0, fly=0.0, compose=0.0, overlay=0.0, n_fly=0, n_hold=0)
 def hold_L(i):
     if ("L", i) not in CACHE:
         for k in [k for k in CACHE if k[0] == "L"]: del CACHE[k]
+        WK.ctx(hold_label(i))
         t0 = time.time(); CACHE[("L", i)] = hold_layers(SEGS[i]); STATS["hold_prep"] += time.time() - t0; STATS["n_hold"] += 1
     return CACHE[("L", i)]
 def fly_img(i, k):
@@ -753,6 +876,7 @@ def fly_img(i, k):
     key = ("F", i, round(k, 5))
     if key in CACHE: return CACHE[key]
     t0 = time.time(); fl = FLIGHTS[i]
+    WK.ctx(f"{flight_label(i)} k={k:.3f}")
     WK.route("upto", fl["mile"], pitch=0.0, dot=i); img = WK.render(flight_cam(fl, k))
     STATS["fly"] += time.time() - t0; STATS["n_fly"] += 1
     if k in (0.0, 1.0): CACHE[key] = img
@@ -781,6 +905,117 @@ def frame(t):
         STATS["compose"] += time.time() - t0
     t0 = time.time(); overlays(fr, t, m); STATS["overlay"] += time.time() - t0
     return fr
+
+# ====================================================================== asset planning and packs
+def glyph_urls():
+    """Glyph ranges every font stack may need beyond what an empty-tile dry run can reveal: Latin, Latin
+    Extended, general punctuation (dashes, quotes). A few KB each."""
+    stacks = {",".join(l["layout"]["text-font"]) for l in style["layers"]
+              if isinstance(l.get("layout", {}).get("text-font"), list) and l.get("layout", {}).get("visibility") != "none"}
+    return sorted(style["glyphs"].replace("{fontstack}", urllib.parse.quote(st, safe=",")).replace("{range}", r)
+                  for st in stacks for r in ("0-255", "256-511", "8192-8447"))
+def kind_of(url):
+    if re.search(r"/\d+/\d+/\d+\.(pbf|mvt)$", url): return "tile"
+    if re.search(r"/\d+/\d+/\d+\.(png|jpg|jpeg|webp)$", url): return "raster-tile"
+    if "/fonts/" in url: return "glyphs"
+    if "/sprites/" in url: return "sprite"
+    if url == A.style: return "style"
+    return "tilejson" if url.rstrip("/").endswith("/planet") else "other"
+def compress_ctx(labels):
+    """'flight 3 (...) k=0.000', ... -> 'flight 3 (...) k=0.000-0.400'; holds stay as they are."""
+    fl, out = {}, []
+    for c in labels:
+        m = re.match(r"^(flight .*) k=([\d.]+)$", c)
+        if m: fl.setdefault(m.group(1), []).append(float(m.group(2)))
+        elif c not in out: out.append(c)
+    return out + [f"{f} k={min(v):.3f}-{max(v):.3f}" for f, v in fl.items()]
+def flight_samples(fl):
+    """Camera positions that cover every tile a flight can request whatever the narration's timing: three
+    samples per output frame, plus both sides of every integer-zoom crossing (where the tile pyramid switches
+    level and the new level's cover is widest; a regular grid can step over that moment)."""
+    n = max(3, int(round(fl["dur"] * FPS * 3)) + 1)
+    ks = set(np.linspace(0, 1, n).tolist())
+    zf = lambda k: math.floor(flight_cam(fl, k)["zoom"])
+    grid = np.linspace(0, 1, 2001); zs = [zf(k) for k in grid]
+    for a, b, za, zb in zip(grid, grid[1:], zs, zs[1:]):
+        if za == zb: continue
+        for _ in range(30):                     # bisect to the crossing
+            m = (a + b) / 2
+            if zf(m) == za: a = m
+            else: b = m
+        ks.update((max(0.0, a - 1e-4), a, b, min(1.0, b + 1e-4)))
+    return sorted(ks)
+def asset_plan():
+    """Dry run: every camera the video uses (each hold; each flight densely, see flight_samples), recording
+    each resource MapLibre asks for and which camera asked."""
+    t0 = time.time()
+    for i, s in enumerate(SEGS):
+        WK.ctx(hold_label(i)); WK.route("none", pitch=s["cam"]["pitch"]); WK.render(s["cam"])
+    for i, fl in enumerate(FLIGHTS):
+        for k in flight_samples(fl):
+            WK.ctx(f"{flight_label(i)} k={k:.4f}")
+            WK.route("upto", fl["mile"], pitch=0.0, dot=i); WK.render(flight_cam(fl, k))
+    WK.close()
+    used = {}
+    for l in open(WK.rec_f):
+        if l.strip():
+            o = json.loads(l); used.setdefault(o["url"], []).append(o["ctx"])
+    for u in glyph_urls(): used.setdefault(u, []).append("standard glyph ranges")
+    res = []
+    for u, c in sorted(used.items()):
+        have = bool(PACK.path_for(u)) if PACK else os.path.exists(f"{A.cache}/res/" + hashlib.sha1(u.encode()).hexdigest())
+        res.append(dict(url=u, path=packlib.url_to_path(u), kind=kind_of(u), have=have, used_by=compress_ctx(c)))
+    rev = []
+    for i, t in enumerate(turns[1:-1], 1):
+        lo_, la_ = t["locs"][-1]; key = packlib.reverse_key(lo_, la_)
+        rev.append(dict(key=key, lon=lo_, lat=la_, turn=i, have=bool(t["title"])))
+    needs = {"schema": packlib.NEEDS_SCHEMA, "route": {"from": A.src, "to": A.dst}, "style": A.style,
+             "pack": A.assets, "made_with": TOOL_COMMIT, "seconds": round(time.time() - t0, 1),
+             "counts": {k: sum(1 for r in res if r["kind"] == k) for k in sorted({r["kind"] for r in res})},
+             "missing": sum(1 for r in res if not r["have"]),
+             "data": {"geocode": [A.src, A.dst], "route": True, "reverse": rev,
+                      "reverse_all_maneuvers": [packlib.reverse_key(*st["maneuver"]["location"]) for st in steps
+                                                if st["maneuver"]["type"] in KEY]},
+             "resources": res}
+    return needs
+def git_commit():
+    try: return subprocess.run(["git", "-C", _here, "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5).stdout.strip() or None
+    except Exception: return None
+TOOL_COMMIT = git_commit()
+if PLANNING:
+    needs = asset_plan()
+    if A.asset_plan:
+        json.dump(needs, open(A.asset_plan, "w"), indent=1)
+        print(f"asset plan: {len(needs['resources'])} resources {needs['counts']}, {needs['missing']} not available"
+              + (" in the pack" if PACK else "") + f"; {needs['seconds']} s -> {A.asset_plan}")
+    if A.make_pack:
+        resources, failed = {}, []
+        for r in needs["resources"]:
+            f = f"{A.cache}/res/" + hashlib.sha1(r["url"].encode()).hexdigest()
+            if not os.path.exists(f):            # glyph ranges no camera asked for yet
+                try: open(f, "wb").write(http(r["url"], binary=True))
+                except Exception as e: failed.append(r["url"]); continue
+            resources[r["url"]] = open(f, "rb").read()
+        resources[A.style] = json.dumps(STYLE_RAW).encode()
+        geo = {q: cached_json("geo_" + slug(q), lambda: None) for q in (A.src, A.dst)
+               if not re.match(r"^\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*$", q)}
+        locs = sorted({tuple(st["maneuver"]["location"]) for st in steps if st["maneuver"]["type"] in KEY}
+                      | {tuple(t["locs"][-1]) for t in turns[1:-1]})
+        print(f"place names for {len(locs)} maneuvers (Nominatim, 1/s, cached)...", flush=True)
+        reverse = {packlib.reverse_key(lo_, la_): place_name(lo_, la_) for lo_, la_ in locs}
+        man = packlib.write_pack(A.make_pack, {"from": A.src, "to": A.dst}, A.style, resources,
+                                 {"geocode.json": geo, "route.json": route, "reverse.json": reverse},
+                                 {"created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "created_by": "routevid3 --make-pack",
+                                  "tool_commit": TOOL_COMMIT, "attribution": "OpenFreeMap © OpenMapTiles Data from OpenStreetMap; "
+                                  "route OSRM; geocoding Nominatim (OpenStreetMap)"})
+        print(f"pack: {A.make_pack} ({len(man['files'])} files, {os.path.getsize(A.make_pack) / 1e6:.1f} MB)"
+              + (f"; {len(failed)} glyph range(s) not available: {failed[:3]}" if failed else ""))
+    sys.exit()
+
+json.dump({"tool_commit": TOOL_COMMIT, "mbgl": MBGL, "style": A.style, "pack": A.assets,
+           "pack_sha256": (PACK.root.name if PACK and len(PACK.root.name) == 64 else None),
+           "pack_created_by": PACK.manifest.get("created_by") if PACK else None, "on_missing": ON_MISSING if PACK else None,
+           "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, open(f"{WORK}/provenance.json", "w"), indent=1)
 
 if A.stills:
     os.makedirs(f"{WORK}/stills", exist_ok=True)
