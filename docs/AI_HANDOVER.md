@@ -45,3 +45,9 @@ All were made from the real OSRM route using native MapLibre imagery/frames (lat
 - Check branch's offline adapter against ZIP's actual schema; do not use personal email as Nominatim contact without user supplying it.
 - Run a small native still test; build a rendering plan based on verified data; avoid promising full native video before coverage.
 - Update this handover with exact version, deliverables, validated commands, remaining defects after every milestone.
+
+## 2026-10-31 continuation: V6 reproducible preview
+- Created and locally verified **40-second silent** V6 MP4 `woodbridge-billings-v6-reproducible.mp4` (960x540, 12 fps, H.264; ffprobe duration 40.000s). A midroute frame was reviewed for clear UI and route positioning.
+- Created a **reproducible source ZIP** `woodbridge-billings-v6-source.zip` containing `render_preview.py`, `map30.png` (the actual native MapLibre 1280x720 overview image), the original one-pass Woodbridge-to-Billings ZIP, and README with exact run command. These two artifacts are delivered via the ChatGPT conversation, **not currently stored in this GitHub repository**; recover them from user conversation attachments or request upload.
+- V6 preserves V4/V5 compact overlay preferences, animates the actual OSRM route geometry, advances the blue marker, and introduces gentle image-space camera crop moves. **Crucially, these are crops of one already-rendered native MapLibre frame, NOT full native high-zoom frame rendering**. No new tiles were fetched; still silent. Do not mistake this for complete upstream `routevid3.py` output.
+- Next priority is moving the standalone V6 renderer into the repo and replacing overview-image camera crops with *actual* camera-specific MapLibre renders, then turn guidance and verified narration. Main remains untouched.
