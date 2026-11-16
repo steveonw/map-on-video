@@ -43,6 +43,7 @@ ap.add_argument("--max-turns", type=int); ap.add_argument("--turns-json")
 ap.add_argument("--style", default="https://tiles.openfreemap.org/styles/liberty")
 ap.add_argument("--crf", type=int, default=24); ap.add_argument("--maxrate", default="3M", help="x264 bitrate cap (flights over cities are costly)")
 ap.add_argument("--plan-only", action="store_true"); ap.add_argument("--stills")
+ap.add_argument("--contact-sheet", metavar="JPG", help="one image with a thumbnail of every narrated view, then stop")
 ap.add_argument("--assets", metavar="PACK", help="route-video-pack-v1 ZIP or folder: render from it with no network (docs/PACK_FORMAT.md)")
 ap.add_argument("--on-missing", choices=["fail", "blank"],
                 help="with --assets, a map resource the pack lacks: stop (default for the video) or draw it blank (default for --stills)")
@@ -1074,6 +1075,23 @@ json.dump({"tool_commit": TOOL_COMMIT, "mbgl": MBGL, "style": A.style, "pack": A
            "pack_created_by": PACK.manifest.get("created_by") if PACK else None, "on_missing": ON_MISSING if PACK else None,
            "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, open(f"{WORK}/provenance.json", "w"), indent=1)
 
+
+def contact_sheet(path, frame_fn, segs, label_font, cols=4, tw=480, th=270):
+    """One image with a thumbnail of every narrated view (at the middle of its line), to check a video before rendering it."""
+    rows = (len(segs) + cols - 1) // cols; cap = 54
+    sheet = Image.new("RGB", (cols * tw, rows * (th + cap)), (28, 22, 16)); d = ImageDraw.Draw(sheet)
+    for i, s in enumerate(segs):
+        t = min(max((s["say0"] + s["say1"]) / 2, s["t0"] + 0.1), s["t1"] - 0.1)
+        x, y = (i % cols) * tw, (i // cols) * (th + cap)
+        sheet.paste(frame_fn(t).resize((tw, th), Image.LANCZOS), (x, y))
+        txt = f"{i + 1}  ·  {int(t // 60)}:{int(t % 60):02d}  ·  {s['text']}"
+        while label_font.getlength(txt) > tw - 16 and len(txt) > 10: txt = txt[:-2]
+        d.text((x + 8, y + th + 6), txt if txt.endswith(s["text"][-3:]) else txt.rstrip() + "…", font=label_font, fill=(240, 232, 218))
+    sheet.save(path, quality=85); return sheet.size
+if A.contact_sheet:
+    print("contact sheet: rendering", len(SEGS), "views...", flush=True); t0_ = time.time()
+    sz = contact_sheet(A.contact_sheet, frame, SEGS, ui("Medium", 15))
+    WK.close(); print(f"contact sheet: {A.contact_sheet} ({sz[0]}x{sz[1]}, {len(SEGS)} views, {time.time() - t0_:.0f} s)"); sys.exit()
 if A.stills:
     os.makedirs(f"{WORK}/stills", exist_ok=True)
     for tt in sorted(float(x) for x in A.stills.split(",")):
