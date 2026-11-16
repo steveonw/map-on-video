@@ -356,6 +356,25 @@ try:
     crossings = clean or crossings
 except Exception as e:
     print("borders skipped:", e)
+# The border data is simplified enough to put river cities on the wrong bank (downtown St. Louis and Cincinnati
+# fall in Illinois and Kentucky). On US trips, check the destination's state with Nominatim and, if it differs,
+# find the real crossing near the end by bisection (about 6 cached lookups).
+def _state_of(m):
+    v = place_name(*lonlat_at(m)); return ABBR_US.get(v.split(",")[-1].strip(), "") if "," in v else ""
+if IN_US and not PACK and len(crossings) > 0 and crossings[-1]["state"]:
+    try:
+        _end = _state_of(TOTAL)
+        if _end and _end != crossings[-1]["state"]:
+            lo_m, hi_m = max(crossings[-1]["mile"], TOTAL - 15), TOTAL
+            if _state_of(lo_m) != _end:
+                while hi_m - lo_m > 0.3:
+                    mid = (lo_m + hi_m) / 2
+                    if _state_of(mid) == _end: hi_m = mid
+                    else: lo_m = mid
+                crossings.append(dict(mile=float(hi_m), state=_end))
+                print(f"borders: the destination is in {_end}; crossing found at mile {hi_m:,.1f} (the border data had it in {crossings[-2]['state']})")
+    except Exception as e:
+        print("destination state check skipped:", e)
 
 # ====================================================================== spoken text
 words, route_num, hm_words = sp.words, sp.route_num, sp.hm_words
