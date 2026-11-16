@@ -37,6 +37,8 @@ ap.add_argument("--narrate", metavar="MODEL_DIR"); ap.add_argument("--voice", de
 ap.add_argument("--style", default="https://tiles.openfreemap.org/styles/liberty")
 ap.add_argument("--out", default="worldtrip.mp4"); ap.add_argument("--crf", type=int, default=24); ap.add_argument("--maxrate", default="3M")
 ap.add_argument("--plan-only", action="store_true"); ap.add_argument("--stills")
+ap.add_argument("--sprites", metavar="DIR", help="pixel-art sprite sheets (P1-01..P2-04, see tools/sprites.py): car, plane, pins, traveller")
+ap.add_argument("--sprite-scale", type=int, default=3, help="whole-number scale for 32x32 sprites (3 = 96 px)")
 ap.add_argument("--draft", metavar="OUT_JSON", help="fill in missing holds, cards, narration and flight times from the route data, write the trip file, stop")
 ap.add_argument("--contact-sheet", metavar="JPG", help="one image with a thumbnail of every narrated view, then stop")
 A = ap.parse_args()
@@ -455,20 +457,58 @@ def draw_plane(d, x, y, ang, s=1.0):
     poly = [(x + s * 1.6 * (px_ * ca - py_ * sa), y + s * 1.6 * (px_ * sa + py_ * ca)) for px_, py_ in pts]
     d.polygon(poly, fill=(255, 255, 255), outline=(11, 47, 102), width=3)
 CHIPS = []
-for c_m, nm in crossings:
+for k_, (c_m, nm) in enumerate(crossings):
     s = next((s for s in SEGS if s["kind"] == "drive" and s["m0"] < c_m <= s["m1"]), None)
     if s is None or c_m - s["m0"] < 0.5: continue
+    if k_ and crossings[k_ - 1][1] == nm: continue          # a new leg in the same state or country is not a border
     ts_ = np.linspace(s["t0"], s["t1"], 400); CHIPS.append((nm, float(np.interp(c_m, [mile_at(x) for x in ts_], ts_))))
+# ---- optional pixel-art sprites (--sprites DIR): car on roads, plane in the air, pins that bounce in on arrival
+SPR = None
+if A.sprites:
+    from tools import sprites as spr
+    SPR = spr.Pack(A.sprites, A.sprite_scale); CAR_DIR, PLANE_DIR = spr.Heading(), spr.Heading(hold_deg=5)
+    _ts = np.arange(0, DUR, 1 / FPS); _ms = np.array([mile_at(x) for x in _ts])
+    ARRIVE = {LEGS[0]["a"]["id"]: SEGS[0]["t1"] if len(SEGS) > 1 else 0.0}     # the start pin drops as the trip begins
+    for L in LEGS:
+        hit = np.nonzero(_ms >= L["m1"] - max(0.05, 0.002 * L["dist"]))[0]
+        ARRIVE.setdefault(L["b"]["id"], float(_ts[hit[0]]) if len(hit) else DUR)
+def draw_sprites(fr, t, mm, cam, sh, s):
+    """Pins (bouncing in, with a sparkle, when the traveller arrives), the car or plane, and a wave at the end."""
+    pf = lambda st: screen(cam, st["lon"], st["lat"])
+    for st in TRIP["stops"]:
+        ta = ARRIVE.get(st["id"])
+        if ta is None or t < ta: continue
+        x, y = pf(st)
+        if not (-60 < x < W + 60 and -60 < y < H - 100): continue
+        k = min(5, int((t - ta) * 12)); im = SPR.pin[k]
+        fr.paste(im, (int(x - SPR.pin_tip[0]), int(y - SPR.pin_tip[1])), im)
+        ks = int((t - ta) * 10)
+        if ks < 6: spr.paste_center(fr, SPR.sparkle[ks], x, y - SPR.size * 0.55)
+    if s["kind"] == "outro" and sh["kind"] == "hold":                # the traveller waves beside the last stop
+        x, y = pf(LEGS[-1]["b"]); seq = SPR.wave if int(t * 2) % 3 else SPR.idle
+        spr.paste_feet(fr, seq[int(t * 6) % len(seq)], x + SPR.size * 0.75, y)
+        return
+    if s["kind"] in ("intro", "outro") and sh["kind"] != "move": return
+    L = leg_at(mm); x, y = screen(cam, *lonlat_at(mm))
+    dm = 25.0 if L["mode"] == "flight" else 0.15
+    (x0, y0), (x1, y1) = screen(cam, *lonlat_at(max(L["m0"], mm - dm))), screen(cam, *lonlat_at(min(L["m1"], mm + dm)))
+    in_air = L["mode"] == "flight" and L["m0"] + 1 < mm < L["m1"] - 1
+    if in_air: spr.paste_center(fr, SPR.plane[PLANE_DIR(x1 - x0, y1 - y0)], x, y)
+    else:
+        moving = sh["kind"] == "hold" and s["kind"] == "drive" and s["t0"] + 0.1 < t < s["t1"] - 0.5
+        bob = SPR.scale if moving and int(t * 8) % 2 else 0          # a one-pixel bounce while driving
+        spr.paste_center(fr, SPR.car[CAR_DIR(x1 - x0, y1 - y0)], x, y - bob)
 def overlays(fr, t, mm, cam):
     d = ImageDraw.Draw(fr, "RGBA"); sh = shot_at(t); s = SEGS[sh["seg"]]
-    for i, st in enumerate(TRIP["stops"]):          # stop markers
+    for i, st in enumerate([] if SPR else TRIP["stops"]):          # stop markers (pins instead when sprites are on)
         x, y = screen(cam, st["lon"], st["lat"])
         if not (-20 < x < W + 20 and -20 < y < H - 100): continue
         if st["id"] == TRIP["stops"][0]["id"]:
             d.ellipse([x - 14, y - 14, x + 14, y + 14], fill=(34, 160, 70), outline="white", width=3)
             d.polygon([(x - 4, y - 7), (x - 4, y + 7), (x + 8, y)], fill="white")
         else: d.ellipse([x - 9, y - 9, x + 9, y + 9], fill=(255, 214, 0), outline=(40, 30, 20), width=3)
-    if s["kind"] not in ("intro", "outro") or sh["kind"] == "move":     # the traveller: a dot on roads, a plane in the air
+    if SPR: draw_sprites(fr, t, mm, cam, sh, s)
+    elif s["kind"] not in ("intro", "outro") or sh["kind"] == "move":     # the traveller: a dot on roads, a plane in the air
         x, y = screen(cam, *lonlat_at(mm)); L = leg_at(mm)
         in_air = L["mode"] == "flight" and L["m0"] + 1 < mm < L["m1"] - 1
         if in_air: draw_plane(d, x, y, heading_px(cam, mm))

@@ -124,6 +124,12 @@ flight time) with one or more `holds`. Each hold has a spoken `text` and an on-s
 and legs is enough: it fills in holds, cards and narration (countries or states crossed, the biggest cities passed,
 distances, estimated flight times, the date line) and keeps anything already written. Borders come from Natural Earth
 (countries, downloaded once; US states from `data/admin1.geojson`).
+**Pixel-art sprites:** `--sprites DIR` swaps the dot and plane for 8-bit sprites: a car that turns with the road (8
+directions, with hysteresis so wiggly roads don't flicker), a plane on the arcs (one nose-up frame rotated with a
+RotSprite-style method, so it looks the same every way), map pins that bounce in with a sparkle as each stop is
+reached, and a traveller who waves at the end. DIR holds four 8x sheets on magenta (`P1-01.png` car, `P1-02.png` plane,
+`P1-03.png` traveller, `P2-04.png` pins and sparkle; layout in `tools/sprites.py`); `--sprite-scale 3` (default) draws
+32 px sprites at 96 px.
 `examples/woodbridge_world.json` (Woodbridge, VA, eastward round the world, 19,483 mi) renders a 2:42 video in
 about 10 minutes on 2 cores.
 
