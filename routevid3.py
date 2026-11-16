@@ -28,6 +28,8 @@ W, H, FPS = 1920, 1080, 24
 ap = argparse.ArgumentParser()
 ap.add_argument("--from", dest="src"); ap.add_argument("--to", dest="dst")
 ap.add_argument("--from-label"); ap.add_argument("--to-label")
+ap.add_argument("--via", action="append", default=None, metavar="PLACE",
+                help="route through this place (repeatable, in order); a place name or lat,lon")
 ap.add_argument("--contact", help="email for the User-Agent (Nominatim/OSRM etiquette)")
 ap.add_argument("--out", default="route_briefing.mp4")
 ap.add_argument("--work", default="routevid_work")
@@ -53,14 +55,14 @@ from tools import pack as packlib
 # The trip's settings are saved in <work>/args.json by the first run, so later steps (--stills, render)
 # need only --work and can't silently render a different route from the one that was reviewed.
 SAVED = ["src", "dst", "from_label", "to_label", "contact", "narrate", "voice", "max_turns", "turns_json", "style", "crf", "maxrate",
-         "cache", "assets"]
+         "cache", "assets", "via"]
 _defaults = {a.dest: a.default for a in ap._actions}
 for a in ap._actions: a.default = argparse.SUPPRESS       # parse again with no defaults: what remains was typed
 _given = set(vars(ap.parse_args()))
 for a in ap._actions: a.default = _defaults[a.dest]
 _argf = f"{WORK}/args.json"
 _old = json.load(open(_argf)) if os.path.exists(_argf) else None
-if _old and any(k in _given and getattr(A, k) != _old.get(k) for k in ("src", "dst")):
+if _old and any(k in _given and getattr(A, k) != _old.get(k) for k in ("src", "dst", "via")):
     print(f"note: a different trip than the one saved in {_argf}; starting fresh"); _old = None
 if _old:
     for k in SAVED:
@@ -116,8 +118,20 @@ def geocode(q):
         time.sleep(1.1)
         r = http("https://nominatim.openstreetmap.org/search", {"q": q, "format": "json", "limit": 1})
         if not r: raise SystemExit(f"could not find place: {q}")
-        return [float(r[0]["lon"]), float(r[0]["lat"]), r[0]["display_name"]]
-    v = cached_json("geo_" + slug(q), go); return v[0], v[1]
+        return [float(r[0]["lon"]), float(r[0]["lat"]), r[0]["display_name"], r[0].get("addresstype") or r[0].get("type") or ""]
+    p = f"{A.cache}/geo_{slug(q)}.json"
+    if os.path.exists(p) and len(json.load(open(p))) < 4: os.remove(p)     # cached before place types were kept: ask once more
+    v = cached_json("geo_" + slug(q), go); GEO[q] = v; return v[0], v[1]
+GEO = {}
+AREA_TYPES = {"city", "town", "village", "hamlet", "municipality", "administrative", "county", "state", "province", "region",
+              "district", "borough", "suburb", "city_district", "quarter", "neighbourhood", "census", "country"}
+def area_warning(q, role):
+    """A whole town/city as an end point: the route then starts at whatever point Nominatim chose for it."""
+    v = GEO.get(q)
+    if not v or len(v) < 4 or v[3] not in AREA_TYPES: return None
+    kind = {"census": "census-designated place", "administrative": "administrative area"}.get(v[3], v[3].replace("_", " "))
+    return (f'"{q}" is a whole {kind}, so the {role} is whatever point Nominatim picked for it. '
+            f"Give a street address or landmark for a cleaner {role}" + (', or say "downtown is fine".' if role == "destination" else "."))
 US_ABBR = {"Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA", "Colorado": "CO", "Connecticut": "CT",
            "Delaware": "DE", "Florida": "FL", "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA",
            "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD", "Massachusetts": "MA", "Michigan": "MI",
@@ -146,13 +160,19 @@ def place_name(lon, lat):
 
 # ====================================================================== route
 slon, slat = geocode(A.src); dlon, dlat = geocode(A.dst)
+VIAS = [geocode(q) for q in (A.via or [])]
+WARNINGS = [w for w in (area_warning(A.src, "start"), area_warning(A.dst, "destination")) if w]
+for w in WARNINGS: print("warning:", w)
+json.dump(WARNINGS, open(f"{WORK}/warnings.json", "w"), indent=1)
 FROM, TO = A.from_label or A.src, A.to_label or A.dst
 if PACK:
     route = PACK.data("route.json")
     if not route: raise SystemExit("the pack has no route (data/route.json)")
 else:
-    route = cached_json(f"osrm_{slon:.5f}_{slat:.5f}_{dlon:.5f}_{dlat:.5f}", lambda: http(
-        f"https://router.project-osrm.org/route/v1/driving/{slon},{slat};{dlon},{dlat}",
+    _wp = [(slon, slat)] + VIAS + [(dlon, dlat)]
+    _via_key = "".join(f"_v{lo:.5f}_{la:.5f}" for lo, la in VIAS)
+    route = cached_json(f"osrm_{slon:.5f}_{slat:.5f}_{dlon:.5f}_{dlat:.5f}{_via_key}", lambda: http(
+        "https://router.project-osrm.org/route/v1/driving/" + ";".join(f"{lo},{la}" for lo, la in _wp),
         {"overview": "full", "geometries": "geojson", "steps": "true"}))
 if route.get("code") != "Ok": raise SystemExit(f"router error: {route.get('code')}")
 if PACK:                         # the route must start and end where the pack's geocodes say
@@ -167,7 +187,13 @@ hh = np.sin((la2 - la1) / 2) ** 2 + np.cos(la1) * np.cos(la2) * np.sin(np.radian
 seg = 2 * 6371008.8 * np.arcsin(np.sqrt(hh))
 cum = np.concatenate([[0], np.cumsum(seg)]) * (R["distance"] / max(seg.sum(), 1)) / MI
 TOTAL, TOTAL_S = R["distance"] / MI, R["duration"]
-steps = R["legs"][0]["steps"]
+steps = []
+for _k, _leg in enumerate(R["legs"]):           # with --via the route has several legs: one step list, no stop at each via
+    for _s in _leg["steps"]:
+        _t = _s["maneuver"]["type"]
+        if _t == "arrive" and _k < len(R["legs"]) - 1: continue           # zero length
+        if _t == "depart" and _k > 0: _s = {**_s, "maneuver": {**_s["maneuver"], "type": "continue"}}
+        steps.append(_s)
 step_mi, step_t, ad, at_ = [], [], 0.0, 0.0
 for s in steps: step_mi.append(ad / MI); step_t.append(at_); ad += s["distance"]; at_ += s["duration"]
 step_mi, step_t = np.array(step_mi), np.array(step_t)
@@ -974,7 +1000,7 @@ def asset_plan():
              "pack": A.assets, "made_with": TOOL_COMMIT, "seconds": round(time.time() - t0, 1),
              "counts": {k: sum(1 for r in res if r["kind"] == k) for k in sorted({r["kind"] for r in res})},
              "missing": sum(1 for r in res if not r["have"]),
-             "data": {"geocode": [A.src, A.dst], "route": True, "reverse": rev,
+             "data": {"geocode": [A.src, A.dst] + (A.via or []), "route": True, "reverse": rev,
                       "reverse_all_maneuvers": [packlib.reverse_key(*st["maneuver"]["location"]) for st in steps
                                                 if st["maneuver"]["type"] in KEY]},
              "resources": res}
@@ -998,7 +1024,7 @@ if PLANNING:
                 except Exception as e: failed.append(r["url"]); continue
             resources[r["url"]] = open(f, "rb").read()
         resources[A.style] = json.dumps(STYLE_RAW).encode()
-        geo = {q: cached_json("geo_" + slug(q), lambda: None) for q in (A.src, A.dst)
+        geo = {q: cached_json("geo_" + slug(q), lambda: None) for q in [A.src, A.dst] + (A.via or [])
                if not re.match(r"^\s*-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?\s*$", q)}
         locs = sorted({tuple(st["maneuver"]["location"]) for st in steps if st["maneuver"]["type"] in KEY}
                       | {tuple(t["locs"][-1]) for t in turns[1:-1]})
