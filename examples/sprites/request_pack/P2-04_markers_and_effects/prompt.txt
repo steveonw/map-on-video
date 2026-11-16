@@ -1,0 +1,19 @@
+P2-04 markers_and_effects
+
+For: stop markers and little effects on the map.
+Layout: 6 columns x 2 rows (1536x512).
+Row 1, a map pin bouncing into place, 6 frames: a red map pin with a white dot drops from the top of the cell,
+squashes on landing, bounces once and settles. Tip of the pin on the ground line.
+Row 2, an arrival sparkle, 6 frames: a small burst of yellow and white star pixels that grows, twinkles and fades
+to nothing in the last frame.
+STYLE: classic 8-bit-era pixel art. Every sprite is 32x32 pixels, drawn at 8x scale so each art pixel is a crisp
+8x8 block (one frame = a 256x256 cell). Hard edges only: no anti-aliasing, no gradients, no blur, no dithering noise.
+Limited palette of at most 16 flat colours, bright and friendly. 1-pixel dark outline around each sprite.
+Light from the top left. Every frame in a sheet is the same size, scale and palette, centred in its cell.
+
+LAYOUT: follow the attached layout.png. One frame per cell, left to right, in the order listed. The background is
+flat solid magenta #FF00FF everywhere (it is cut out later): no shadows on the background, no floor, no scenery.
+The short line near the bottom of each cell marks where the wheels or feet touch the ground.
+
+AVOID: no text, letters, numbers, logos, brand names or watermarks; no grid lines or cell borders in the result;
+no characters, vehicles or designs from existing games, films or brands; no realistic shading; no extra frames.
