@@ -47,3 +47,13 @@ class Respell(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SaintAndSigns(unittest.TestCase):
+    def test_saint_vs_street(self):
+        self.assertEqual(S.speak("Keep right to stay on I-70 toward St Louis"), "Keep right to stay on I seventy toward Saint Louis")
+        self.assertEqual(S.speak("Turn left onto Market St North"), "Turn left onto Market Street North")
+
+    def test_bare_state_code_after_city(self):
+        self.assertEqual(S.speak("Keep left onto I-470 West toward Columbus OH"), "Keep left onto I four seventy West toward Columbus, Ohio")
+        self.assertEqual(S.speak("toward Columbus OH", us=False), "Toward Columbus OH")

@@ -58,6 +58,13 @@ def speak(text, us=True):
     t = re.sub(r"\b([A-Z]{1,3})-(\d+[A-Z]?)\b", ref, t)
     t = re.sub(r"\bAlt\b\.?", "alternate", t); t = re.sub(r"\bBus\.", "business", t)
     if us: t = re.sub(r",\s*([A-Z]{2})\b", lambda m: ", " + ABBR_US.get(m.group(1), m.group(1)), t)
+    # "St": Saint before a place name after a lowercase word ("toward St Louis"), else Street ("Market St North")
+    def _st(m):
+        before = t[:m.start()].rstrip(); prev = before.split()[-1] if before.split() else ""
+        return "Saint " if not prev or prev[-1] in ",:" or prev.islower() else m.group(0)
+    t = re.sub(r"\bSt\.? (?=[A-Z][a-z])", _st, t)
+    if us:   # a bare state code after a place on a sign: "toward Columbus OH" -> "Columbus, Ohio"
+        t = re.sub(r"\b([A-Z][a-z]+) ([A-Z]{2})\b(?!-)", lambda m: f"{m.group(1)}, {ABBR_US[m.group(2)]}" if m.group(2) in ABBR_US else m.group(0), t)
     for a, b in (("Va Beach", "Virginia Beach"), (" St ", " Street "), (" Ave ", " Avenue "), (" Blvd", " Boulevard"), (" Hwy", " Highway"), (" Pkwy", " Parkway")):
         t = t.replace(a, b)
     t = re.sub(r"\b(\d+)\b", lambda m: words(int(m.group(1))), t)
