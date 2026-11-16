@@ -24,16 +24,17 @@ It's a **preview, not navigation**. The routing comes from the free OSRM demo se
 ## Quick start
 
 ```bash
-# system packages: native MapLibre needs a virtual display and libOpenGL
-sudo apt-get install -y xvfb libopengl0 ffmpeg nodejs npm
-pip install -r requirements.txt
+# 0. setup, once (rerunnable): system and Python packages, native MapLibre, the voice in the right layout,
+#    the speech-check model, then a one-word voice test; prints the --narrate and --asr-dir paths
+bash tools/setup.sh
 
 # 1. plan: prints the route, key turns, border crossings and the spoken script (nothing drawn)
 python3 routevid3.py --from "Potomac Mills, Woodbridge VA" --to "Wise, Wise County, Virginia" \
   --from-label "Potomac Mills" --to-label "Wise, Virginia" --contact you@example.com \
   --narrate voices/kokoro-v1 --work wise --plan-only
 
-# 2. stills: prints the shot table (hold / fly, start–end) and saves a few frames as JPGs
+# 2. check by eye: every narrated view in one image (about 0.5 s a view), or a few full-size stills
+python3 routevid3.py --work wise --contact-sheet sheet.jpg
 python3 routevid3.py --work wise --stills 2,12,20,45
 
 # 3. render (faster than real time; run long trips in the background)
@@ -50,6 +51,16 @@ into its cache folder (`~/.cache/routevid`) and calls `xvfb-run` itself.
 `<folder>/onnx/model.onnx`, `<folder>/tokenizer.json` and `<folder>/voices/af_heart.bin` (`tools/narrate.py` reads
 those exact subpaths; a flat folder doesn't work). Pass `<folder>` with `--narrate`.
 Leave out `--narrate` for a silent video with estimated pacing.
+
+**Start and end points:** give a street address or landmark. A whole town or city ("Woodbridge, Virginia") starts the
+route at whatever point Nominatim picked; `--plan-only` warns about it (also in `<work>/warnings.json`).
+
+**Force a route:** `--via "Breezewood, PA"` (repeatable, in order) routes through places, e.g. to match the route you
+will really drive; no turn is made at the via itself.
+
+**Outside the US:** `--units auto` (default) shows and says miles in the US and UK and kilometres elsewhere. US road
+and state conventions (VA-234, ", MO") apply only on US trips, so CA-9113 in Spain is "C A ninety-one thirteen".
+Hard place names can be respelled for the voice in `data/pronounce.json` (subtitles keep the real spelling).
 
 **Options:** `--voice am_michael`, `--max-turns N`, `--turns-json file` (hand-fix the turn list),
 `--style <MapLibre style URL>`, `--crf 24`, `--maxrate 3M` (bitrate cap; flights over cities cost the most),
@@ -83,7 +94,10 @@ the script adds `lib/` to the library path.
 
 ## Review the turn list
 
-Wrong or missing turns are the worst failure, so look at the `--plan-only` output before rendering. To override,
+Wrong or missing turns are the worst failure, so look at the `--plan-only` output before rendering. Its `review:`
+block lists every decision step that is *not* in the turn list, with the reason (over the turn cap, merged with a
+nearby turn, short road, same road); check those first (also in `<work>/turn_review.json`). Forks where the road keeps
+its number (I-64/I-75, I-57/I-64) and turns where a route number jogs through town are turns too. To override,
 pass `--turns-json` with `[{"steps": [i, ...], "title": "...", "text": "..."}]`. The first entry is START and the
 last is DESTINATION; step numbers come from the OSRM step list.
 
@@ -97,14 +111,18 @@ routevid3's map worker (extracted from `routevid3.py`, so there's still one copy
 same tile cache.
 
 ```bash
+python3 worldtrip.py --trip my_trip.json --work work --draft drafted.json            # write holds + narration from the data
 python3 worldtrip.py --trip examples/woodbridge_world.json --work work --plan-only     # legs, borders, script
+python3 worldtrip.py --trip examples/woodbridge_world.json --work work --narrate <voice dir> --contact-sheet sheet.jpg
 python3 worldtrip.py --trip examples/woodbridge_world.json --work work --narrate <voice dir> --stills 3,82,110
 python3 worldtrip.py --trip examples/woodbridge_world.json --work work --narrate <voice dir> --out world.mp4
 ```
 
 The trip file lists stops (with coordinates) and legs. Each leg is `drive` or `flight` (`hours` for the
 flight time) with one or more `holds`. Each hold has a spoken `text` and an on-screen `card`. A hold's `to_mile`
-(miles from the start of the leg) splits a long drive into several views. Borders come from Natural Earth
+(miles from the start of the leg) splits a long drive into several views. With `--draft`, a file of just stops
+and legs is enough: it fills in holds, cards and narration (countries or states crossed, the biggest cities passed,
+distances, estimated flight times, the date line) and keeps anything already written. Borders come from Natural Earth
 (countries, downloaded once; US states from `data/admin1.geojson`).
 `examples/woodbridge_world.json` (Woodbridge, VA, eastward round the world, 19,483 mi) renders a 2:42 video in
 about 10 minutes on 2 cores.
@@ -152,11 +170,14 @@ More detail: [docs/RESULTS.md](docs/RESULTS.md) (version history and measurement
 routevid3.py          the tool (one file)
 worldtrip.py          multi-leg overview videos: drives plus great-circle flights
 examples/             trip files for worldtrip.py
+tools/setup.sh        one-command setup with a voice self-check
+tools/speech.py       spoken-text rules: numbers, road names, US-only conventions, units, respellings
 tools/narrate.py      local TTS (Kokoro / sherpa-onnx) -> narration.wav + exact sentence timestamps
 tools/check_audio.py  speech-recognition check of the narration against the script
 tools/pack.py         asset packs: URL mapping, validation, reading and writing (route-video-pack-v1)
 tools/onepass_to_pack.py  converts a browser one-pass ZIP into a pack
 data/admin1.geojson   US, Canada and Mexico state/province borders (Natural Earth, public domain)
+data/pronounce.json   place name -> respelling for the voice
 tests/                python3 -m unittest discover -s tests
 docs/                 pack format, AI-review handouts and measured results
 ```
