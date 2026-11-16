@@ -167,11 +167,28 @@ if PACK:
     route = PACK.data("route.json")
     if not route: raise SystemExit("the pack has no route (data/route.json)")
 else:
-    _wp = [(slon, slat)] + VIAS + [(dlon, dlat)]
-    _via_key = "".join(f"_v{lo:.5f}_{la:.5f}" for lo, la in VIAS)
-    route = cached_json(f"osrm_{slon:.5f}_{slat:.5f}_{dlon:.5f}_{dlat:.5f}{_via_key}", lambda: http(
-        "https://router.project-osrm.org/route/v1/driving/" + ";".join(f"{lo},{la}" for lo, la in _wp),
-        {"overview": "full", "geometries": "geojson", "steps": "true"}))
+    def _osrm(wps, tag):
+        key = "".join(f"_{tag}{lo:.5f}_{la:.5f}" for lo, la in wps[1:-1])
+        return cached_json(f"osrm_{slon:.5f}_{slat:.5f}_{dlon:.5f}_{dlat:.5f}{key}", lambda: http(
+            "https://router.project-osrm.org/route/v1/driving/" + ";".join(f"{lo},{la}" for lo, la in wps),
+            {"overview": "full", "geometries": "geojson", "steps": "true"}))
+    route = _osrm([(slon, slat)] + VIAS + [(dlon, dlat)], "v")
+    if VIAS and route.get("code") == "Ok":
+        # A town's point usually sits on a side road, and routing *through* it adds a loop around the block
+        # (Breezewood: off US-30, four turns, back on). Treat each via as a corridor instead: route through points
+        # ~5 mi before and after it on this first route, so between them the router takes its natural road.
+        _R = route["routes"][0]; _c = np.array(_R["geometry"]["coordinates"])
+        _la1, _la2 = np.radians(_c[:-1, 1]), np.radians(_c[1:, 1])
+        _h = np.sin((_la2 - _la1) / 2) ** 2 + np.cos(_la1) * np.cos(_la2) * np.sin(np.radians(_c[1:, 0] - _c[:-1, 0]) / 2) ** 2
+        _cm = np.concatenate([[0], np.cumsum(2 * 6371008.8 * np.arcsin(np.sqrt(_h)))]); _cm *= _R["distance"] / max(_cm[-1], 1)
+        _legs = np.cumsum([l["distance"] for l in _R["legs"]]); anchors = []
+        for k in range(len(VIAS)):
+            at = _legs[k]; room = min(_R["legs"][k]["distance"], _R["legs"][k + 1]["distance"])
+            off = min(5 * MI, 0.3 * room)
+            for m_ in (at - off, at + off):
+                anchors.append((float(np.interp(m_, _cm, _c[:, 0])), float(np.interp(m_, _cm, _c[:, 1]))))
+        route = _osrm([(slon, slat)] + anchors + [(dlon, dlat)], "a")
+        print(f"via: routed through {len(VIAS)} place(s) as a corridor (points 5 mi either side), not through their exact point")
 if route.get("code") != "Ok": raise SystemExit(f"router error: {route.get('code')}")
 if PACK:                         # the route must start and end where the pack's geocodes say
     _c = route["routes"][0]["geometry"]["coordinates"]
@@ -223,14 +240,24 @@ def run_miles(i):
         if ident(j) and ident(j) != idn: break
         tot += steps[j]["distance"]
     return tot / MI
-def direction(dest):
-    m = re.search(r"\b(North|South|East|West)\b", dest or ""); return m.group(1) if m else ""
+SIGN_REF = r"\b([A-Z]{1,3})\s?(\d+[A-Z]?)\s(North|South|East|West)\b"
+def direction(dest, road=""):
+    """The direction printed next to *this* road on the sign: 'US 30 East, I 70 West' -> West for I-70."""
+    signs = (dest or "").split(":")[0]; pairs = re.findall(SIGN_REF, signs)
+    want = re.match(r"^([A-Z]{1,3})-(\d+[A-Z]?)", road or "")
+    for pre, num, d in pairs:
+        if want and (pre, num) == want.groups(): return d
+    dirs = {d for _, _, d in pairs} or set(re.findall(r"\b(North|South|East|West)\b", signs))
+    return dirs.pop() if len(dirs) == 1 else ""
 def toward(dest):
+    """First control city, only when the sign names one road: with several, the cities can't be matched to roads."""
     if not dest or ":" not in dest: return ""
-    return dest.split(":", 1)[1].split(",")[0].strip()
+    refs, cities = dest.split(":", 1)
+    if len(re.findall(r"\b[A-Z]{1,4}\s?\d+", refs)) > 1: return ""
+    return cities.split(",")[0].strip()
 def instruction(i, j_road, stay=False):
     s = steps[i]; m = s["maneuver"]; typ, mod = m["type"], m.get("modifier", "")
-    dest = s.get("destinations") or ""; road = display(j_road); d = direction(dest)
+    dest = s.get("destinations") or ""; road = display(j_road); d = direction(dest, road)
     if d and re.match(r"^(I|US)-", road) and d not in road: road = re.sub(r"^(\S+)", r"\1 " + d, road, count=1)
     tw = toward(dest); tw = f" toward {tw}" if tw and tw not in road else ""
     side = "left" if "left" in mod else ("right" if "right" in mod else "")
