@@ -39,6 +39,7 @@ _here = os.path.dirname(os.path.abspath(__file__))
 ap.add_argument("--narrate-py", default=next((p for p in (os.path.join(_here, "tools", "narrate.py"), "narrate.py") if os.path.exists(p)), "narrate.py"),
                 help="path to narrate.py (default: tools/narrate.py next to this script)")
 ap.add_argument("--voice", default="af_heart")
+ap.add_argument("--units", choices=["auto", "mi", "km"], default="auto", help="shown and spoken distances (auto: miles in the US and UK, else km)")
 ap.add_argument("--max-turns", type=int); ap.add_argument("--turns-json")
 ap.add_argument("--style", default="https://tiles.openfreemap.org/styles/liberty")
 ap.add_argument("--crf", type=int, default=24); ap.add_argument("--maxrate", default="3M", help="x264 bitrate cap (flights over cities are costly)")
@@ -56,7 +57,7 @@ from tools import pack as packlib
 # The trip's settings are saved in <work>/args.json by the first run, so later steps (--stills, render)
 # need only --work and can't silently render a different route from the one that was reviewed.
 SAVED = ["src", "dst", "from_label", "to_label", "contact", "narrate", "voice", "max_turns", "turns_json", "style", "crf", "maxrate",
-         "cache", "assets", "via"]
+         "cache", "assets", "via", "units"]
 _defaults = {a.dest: a.default for a in ap._actions}
 for a in ap._actions: a.default = argparse.SUPPRESS       # parse again with no defaults: what remains was typed
 _given = set(vars(ap.parse_args()))
@@ -133,15 +134,8 @@ def area_warning(q, role):
     kind = {"census": "census-designated place", "administrative": "administrative area"}.get(v[3], v[3].replace("_", " "))
     return (f'"{q}" is a whole {kind}, so the {role} is whatever point Nominatim picked for it. '
             f"Give a street address or landmark for a cleaner {role}" + (', or say "downtown is fine".' if role == "destination" else "."))
-US_ABBR = {"Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR", "California": "CA", "Colorado": "CO", "Connecticut": "CT",
-           "Delaware": "DE", "Florida": "FL", "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID", "Illinois": "IL", "Indiana": "IN", "Iowa": "IA",
-           "Kansas": "KS", "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD", "Massachusetts": "MA", "Michigan": "MI",
-           "Minnesota": "MN", "Mississippi": "MS", "Missouri": "MO", "Montana": "MT", "Nebraska": "NE", "Nevada": "NV", "New Hampshire": "NH",
-           "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY", "North Carolina": "NC", "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK",
-           "Oregon": "OR", "Pennsylvania": "PA", "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX",
-           "Utah": "UT", "Vermont": "VT", "Virginia": "VA", "Washington": "WA", "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
-           "District of Columbia": "DC"}
-ABBR_US = {v: k for k, v in US_ABBR.items()}
+from tools import speech as sp
+US_ABBR, ABBR_US = sp.US_ABBR, sp.ABBR_US
 MISSING_NAMES = []
 def place_name(lon, lat):
     """'Town, ST' near a point, or "" when unknown (offline without it in the pack): never coordinates,
@@ -165,6 +159,9 @@ VIAS = [geocode(q) for q in (A.via or [])]
 WARNINGS = [w for w in (area_warning(A.src, "start"), area_warning(A.dst, "destination")) if w]
 for w in WARNINGS: print("warning:", w)
 json.dump(WARNINGS, open(f"{WORK}/warnings.json", "w"), indent=1)
+COUNTRY = (GEO.get(A.src) or [0, 0, ""])[2].split(",")[-1].strip() if GEO.get(A.src) else ""
+IN_US = COUNTRY in ("", "United States")
+U = sp.Units(A.units if A.units != "auto" else sp.units_for(COUNTRY))
 FROM, TO = A.from_label or A.src, A.to_label or A.dst
 if PACK:
     route = PACK.data("route.json")
@@ -344,9 +341,9 @@ try:
         if PACK: raise RuntimeError("route is outside the bundled North American border data")
         NE = f"{A.cache}/ne"; os.makedirs(NE, exist_ok=True)
         base = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/10m_cultural/ne_10m_admin_1_states_provinces"
-        for ext in ("shp", "shx", "dbf", "prj"):
+        for ext in ("shp", "shx", "dbf", "prj", "cpg"):
             if not os.path.exists(f"{NE}/admin1.{ext}"): open(f"{NE}/admin1.{ext}", "wb").write(http(f"{base}.{ext}", binary=True))
-        adm = gpd.read_file(f"{NE}/admin1.shp", bbox=(lo.min() - 1, la.min() - 1, lo.max() + 1, la.max() + 1))[["name", "geometry"]]
+        adm = gpd.read_file(f"{NE}/admin1.shp", encoding="utf-8", bbox=(lo.min() - 1, la.min() - 1, lo.max() + 1, la.max() + 1))[["name", "geometry"]]
     j = gpd.sjoin(gpd.GeoDataFrame(geometry=gpd.points_from_xy(lo, la), crs=4326), adm.to_crs(4326), how="left", predicate="within")
     names = j.sort_index()["name"].groupby(level=0).first().ffill().bfill().fillna("").tolist()
     raw, cur = [], None
@@ -361,48 +358,8 @@ except Exception as e:
     print("borders skipped:", e)
 
 # ====================================================================== spoken text
-ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
-TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
-def words(n):
-    n = int(round(n))
-    if n < 20: return ONES[n]
-    if n < 100: return TENS[n // 10] + ("" if n % 10 == 0 else "-" + ONES[n % 10])
-    if n < 1000: return ONES[n // 100] + " hundred" + ("" if n % 100 == 0 else " " + words(n % 100))
-    if n < 10000: return words(n // 1000) + " thousand" + ("" if n % 1000 == 0 else " " + words(n % 1000))
-    return str(n)
-def route_num(s):
-    """Highway numbers the way people say them: 64 -> sixty-four, 264 -> two sixty-four, 508 -> five oh eight."""
-    n = int(re.match(r"\d+", s).group()); suffix = s[len(str(n)):]
-    if n < 100: out = words(n)
-    elif n < 1000: out = ONES[n // 100] + " " + ("oh " + ONES[n % 100] if 0 < n % 100 < 10 else ("hundred" if n % 100 == 0 else words(n % 100)))
-    elif n < 10000: out = words(n // 100) + " " + ("hundred" if n % 100 == 0 else ("oh " + ONES[n % 100] if n % 100 < 10 else words(n % 100)))
-    else: out = words(n)
-    return out + (" " + " ".join(suffix) if suffix else "")
-def speak(text):
-    t = text.replace("&", "and").replace("·", ",")
-    t = re.sub(r"\(([^)]*)\)", r", \1,", t)
-    def ref(m):
-        pre, num = m.group(1), m.group(2)
-        if pre == "I": return f"I {route_num(num)}"
-        if pre == "US": return f"U.S. {route_num(num)}"
-        if pre == "SR": return f"state route {route_num(num)}"
-        if pre == "CR": return f"county road {route_num(num)}"
-        if pre in ABBR_US: return f"{ABBR_US[pre]} {route_num(num)}"
-        return f"{pre} {route_num(num)}"
-    t = re.sub(r"\b([A-Z]{1,3})-(\d+[A-Z]?)\b", ref, t)
-    t = re.sub(r"\bAlt\b\.?", "alternate", t); t = re.sub(r"\bBus\.", "business", t)
-    t = re.sub(r",\s*([A-Z]{2})\b", lambda m: ", " + ABBR_US.get(m.group(1), m.group(1)), t)
-    for a, b in (("Va Beach", "Virginia Beach"), (" St ", " Street "), (" Ave ", " Avenue "), (" Blvd", " Boulevard"), (" Hwy", " Highway"), (" Pkwy", " Parkway")):
-        t = t.replace(a, b)
-    t = re.sub(r"\b(\d+)\b", lambda m: words(int(m.group(1))), t)
-    t = re.sub(r"\s+,", ",", re.sub(r",\s*,", ",", re.sub(r"\s+", " ", t))).strip(" ,")
-    return t[0].upper() + t[1:] if t else t
-def hm_words(sec):
-    h, m = divmod(int(round(sec / 60)), 60)
-    if h and m: return f"{words(h)} hour{'s' if h > 1 else ''} {words(m)} minutes"
-    return f"{words(h)} hour{'s' if h > 1 else ''}" if h else f"{words(m)} minutes"
-
-# ====================================================================== segments (story of the trip)
+words, route_num, hm_words = sp.words, sp.route_num, sp.hm_words
+def speak(text): return sp.speak(text, us=IN_US)       # US road and state conventions only on US trips
 def main_road(m0, m1):
     tot = {}
     for i, s in enumerate(steps):
@@ -412,7 +369,7 @@ def main_road(m0, m1):
     return max(tot, key=tot.get) if tot else ""
 def states_in(m0, m1): return [c["state"] for c in crossings[1:] if m0 < c["mile"] <= m1 and c["state"]]
 nkey = len(turns) - 2
-SEGS = [dict(kind="intro", m0=0, m1=0, text=f"This is your route from {FROM} to {TO}: {words(TOTAL)} miles, about {hm_words(TOTAL_S)} of driving, "
+SEGS = [dict(kind="intro", m0=0, m1=0, text=f"This is your route from {FROM} to {TO}: {words(U(TOTAL))} {U.word}, about {hm_words(TOTAL_S)} of driving, "
              f"with {words(nkey)} key turn{'s' if nkey != 1 else ''}.", title="Overview")]
 prev_end = 0.0
 for ti, t in enumerate(turns):
@@ -423,15 +380,16 @@ for ti, t in enumerate(turns):
     a = max(prev_end, (t["first_mile"] - 0.35) if ti < len(turns) - 1 else TOTAL - 0.6)
     if a - prev_end >= 1.5:
         road = main_road(prev_end, a); sts = states_in(prev_end, a); d = a - prev_end
-        line = f"Then follow {speak(road)} for about {words(d if d < 20 else round(d / 5) * 5)} miles" if road else f"Continue for about {words(d)} miles"
+        du = U(d); line = (f"Then follow {speak(road)} for about {words(du if du < 20 else round(du / 5) * 5)} {U.word}" if road
+                           else f"Continue for about {words(du)} {U.word}")
         if sts: line += ", into " + " and then ".join(sts[:3])
-        SEGS.append(dict(kind="travel", m0=prev_end, m1=a, title=f"{road or 'Drive'}, {d:,.0f} mi", text=line + "."))
+        SEGS.append(dict(kind="travel", m0=prev_end, m1=a, title=f"{road or 'Drive'}, {U(d):,.0f} {U.short}", text=line + "."))
     else:
         a = prev_end
     if ti < len(turns) - 1:
         b = min(TOTAL, t["mile"] + 0.3)
         SEGS.append(dict(kind="close", turn=ti, m0=a, m1=b, title=f"Turn {ti}: {t['text']}",
-                         text=f"At mile {words(t['mile'])}" + (f", near {speak(t['title'])}" if t["title"] else "") + f": {speak(t['text'])}."))
+                         text=f"At {U.one} {words(U(t['mile']))}" + (f", near {speak(t['title'])}" if t["title"] else "") + f": {speak(t['text'])}."))
     else:
         b = TOTAL
         a = max(a, TOTAL - 0.6)          # the arrival close-up shows the last stretch, framed tight
@@ -567,7 +525,7 @@ for s in SEGS:
     s["want"] = float(np.clip((s["m1"] - s["m0"]) / TOTAL * BUDGET, 2.5, 14)) if s["kind"] == "travel" else (5.5 if s["kind"] != "outro" else 4.0)
 need_gap = [fl["dur"] + 0.45 for fl in FLIGHTS] + [0.35]
 if A.narrate:
-    plan = {"title": f"{FROM} to {TO}", "scenes": [{"title": s["title"], "lines": [{"text": s["text"]}]} for s in SEGS]}
+    plan = {"title": f"{FROM} to {TO}", "scenes": [{"title": s["title"], "lines": [{"text": sp.respell(s["text"])}]} for s in SEGS]}
     def run_narrate():
         json.dump(plan, open(f"{WORK}/plan.json", "w"), indent=1)
         r = subprocess.run([sys.executable, A.narrate_py, f"{WORK}/plan.json", "--model-dir", A.narrate, "--voice", A.voice, "--gap", "0.35", "--scene-gap", "0.35"],
@@ -863,7 +821,7 @@ def draw_marks(d, L, seg, m, t):
 def draw_card(d, seg):
     tt = turns[seg["turn"]]
     head = ("START  ·  " + FROM.upper()) if seg["turn"] == 0 else ("DESTINATION  ·  " + TO.upper()) if seg["turn"] == len(turns) - 1 \
-        else f"TURN {seg['turn']} OF {nkey}  ·  MILE {tt['mile']:,.0f}" + (f"  ·  {tt['title'].upper()}" if tt["title"] else "")
+        else f"TURN {seg['turn']} OF {nkey}  ·  {U.one.upper()} {U(tt['mile']):,.0f}" + (f"  ·  {tt['title'].upper()}" if tt["title"] else "")
     f, lines = card_fit(tt["text"]); lh = int(f.size * 1.22)
     d.rounded_rectangle([28, 24, 28 + max([f.getlength(l) for l in lines] + [F["head"].getlength(head)]) + 64, 24 + 70 + lh * len(lines)], radius=20, fill=(28, 22, 16))
     d.text((60, 42), head, font=F["head"], fill=(255, 214, 0))
@@ -878,9 +836,9 @@ def overlays(fr, t, m):
     st = state_at(m)
     if st: d.text((40 + d.textlength(head, font=F["strip_b"]), y0 + 16), f"  ·  {st}", font=F["strip"], fill=(200, 190, 175))
     left_s = TOTAL_S - float(np.interp(m, step_mi, step_t))
-    d.text((W - 32, y0 + 14), f"{m:,.0f} mi done   ·   {TOTAL - m:,.0f} mi left   ·   ~{fmt_hm(left_s)} to go", font=F["strip"], fill=(225, 218, 205), anchor="ra")
+    d.text((W - 32, y0 + 14), f"{U(m):,.0f} {U.short} done   ·   {U(TOTAL - m):,.0f} {U.short} left   ·   ~{fmt_hm(left_s)} to go", font=F["strip"], fill=(225, 218, 205), anchor="ra")
     nxt = next((k for k, tt in enumerate(turns) if tt["mile"] > m + 0.05 and k > 0), None)
-    txt = (f"{'Arrive' if nxt == len(turns) - 1 else f'Next turn {nxt}'}: {turns[nxt]['text']}   ·   in {turns[nxt]['mile'] - m:,.1f} mi"
+    txt = (f"{'Arrive' if nxt == len(turns) - 1 else f'Next turn {nxt}'}: {turns[nxt]['text']}   ·   in {U(turns[nxt]['mile'] - m):,.1f} {U.short}"
            if nxt is not None else f"You have arrived: {TO}.")
     while d.textlength(txt, font=F["strip"]) > W - 64: txt = txt[:-2]
     d.text((32, y0 + 50), txt, font=F["strip"], fill=(255, 214, 0))
@@ -907,8 +865,8 @@ def overlays(fr, t, m):
         a = min(1.0, (t - s["t0"]) / 0.5) if s["kind"] == "outro" else min(1.0, (s["t1"] - t) / 0.6)
         if a <= 0: return
         tt = f"{FROM} to {TO}" if s["kind"] == "intro" else f"You made it to {TO}"
-        ss = (f"{TOTAL:,.0f} miles  ·  about {fmt_hm(TOTAL_S)} of driving  ·  {nkey} key turn{'s' if nkey != 1 else ''}" if s["kind"] == "intro"
-              else f"{TOTAL:,.0f} miles from {FROM}")
+        ss = (f"{U(TOTAL):,.0f} {U.word}  ·  about {fmt_hm(TOTAL_S)} of driving  ·  {nkey} key turn{'s' if nkey != 1 else ''}" if s["kind"] == "intro"
+              else f"{U(TOTAL):,.0f} {U.word} from {FROM}")
         ft = F["title"]
         while d.textlength(tt, font=ft) > 1300 and ft.size > 40: ft = serif(ft.size - 4)
         ov = Image.new("RGBA", (W, H), (0, 0, 0, 0)); od = ImageDraw.Draw(ov)

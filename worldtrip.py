@@ -25,6 +25,8 @@ MI = 1609.344
 W, H, FPS = 1920, 1080, 24
 VW, VH, RATIO = 1280, 720, 1.5
 _here = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _here)
+from tools import speech as sp
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--trip", required=True)
@@ -101,9 +103,9 @@ crossings = []      # (mile, region name), drives only
 try:
     import geopandas as gpd
     base = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/50m_cultural/ne_50m_admin_0_countries"
-    for ext in ("shp", "shx", "dbf", "prj"):
+    for ext in ("shp", "shx", "dbf", "prj", "cpg"):
         if not os.path.exists(f"{NE}/admin0.{ext}"): open(f"{NE}/admin0.{ext}", "wb").write(http(f"{base}.{ext}", binary=True))
-    adm0 = gpd.read_file(f"{NE}/admin0.shp")[["NAME", "geometry"]]
+    adm0 = gpd.read_file(f"{NE}/admin0.shp", encoding="utf-8")[["NAME", "geometry"]]
     adm1 = gpd.read_file(os.path.join(_here, "data", "admin1.geojson"))
     adm1 = adm1[adm1["admin"] == "United States of America"][["name", "geometry"]]
     for L in LEGS:
@@ -207,7 +209,7 @@ def want(s):
     return 8.0 + 4.0 * min(1.0, (s["m1"] - s["m0"]) / 3000)
 need_gap = [mv["dur"] + 0.45 for mv in MOVES] + [0.35]
 if A.narrate:
-    plan = {"title": TRIP["title"], "scenes": [{"title": s["title"], "lines": [{"text": s["text"]}]} for s in SEGS]}
+    plan = {"title": TRIP["title"], "scenes": [{"title": s["title"], "lines": [{"text": sp.respell(s["text"])}]} for s in SEGS]}
     def run_narrate():
         json.dump(plan, open(f"{WORK}/plan.json", "w"), indent=1)
         r = subprocess.run([sys.executable, os.path.join(_here, "tools", "narrate.py"), f"{WORK}/plan.json", "--model-dir", A.narrate,
@@ -250,7 +252,7 @@ NODE = f"{A.cache}/node3"
 if not os.path.exists(f"{NODE}/node_modules/@maplibre/maplibre-gl-native"):
     subprocess.run(["npm", "install", "--prefix", NODE, "@maplibre/maplibre-gl-native@6.4.1", "--silent"], check=True)
 src = open(os.path.join(_here, "routevid3.py")).read()
-sys.path.insert(0, _here); from tools import pack as packlib
+from tools import pack as packlib
 WJS = re.search(r'WORKER = r"""(.*?)"""', src, re.S).group(1)
 WJS = WJS.replace("%PACK_JS%", packlib.PACK_JS).replace("%RATIO%", str(RATIO)).replace("%VW%", str(VW)).replace("%VH%", str(VH))
 open(f"{NODE}/worker.js", "w").write(WJS)

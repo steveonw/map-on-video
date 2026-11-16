@@ -1,0 +1,17 @@
+{
+ "_about": "Place name -> how the voice should say it (spoken text only; subtitles and cards keep the real spelling). Hyphens split syllables. Add names as they come up.",
+ "Ljubljana": "Lyoo-blyah-nah",
+ "Alhaurín de la Torre": "Al-ow-reen deh lah Toh-reh",
+ "Alhaurín": "Al-ow-reen",
+ "Setenil de las Bodegas": "Seh-teh-neel deh lahs Boh-deh-gahs",
+ "Setenil": "Seh-teh-neel",
+ "Cártama": "Kar-tah-mah",
+ "Málaga": "Mah-lah-gah",
+ "Cádiz": "Kah-deeth",
+ "Edirne": "Eh-deer-neh",
+ "Plovdiv": "Plov-deev",
+ "Niš": "Neesh",
+ "Karawanken": "Kah-rah-vahn-ken",
+ "Kapıkule": "Kah-puh-koo-leh",
+ "Würzburg": "Vurts-burg"
+}
