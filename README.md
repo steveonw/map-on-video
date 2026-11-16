@@ -87,6 +87,28 @@ Wrong or missing turns are the worst failure, so look at the `--plan-only` outpu
 pass `--turns-json` with `[{"steps": [i, ...], "title": "...", "text": "..."}]`. The first entry is START and the
 last is DESTINATION; step numbers come from the OSRM step list.
 
+## Multi-leg trips with flights (`worldtrip.py`)
+
+`worldtrip.py` makes an overview video of a journey with several legs, such as a fly-drive holiday or a trip
+around the world. Drives use OSRM roads, and flights are drawn as great-circle arcs with a small plane. Each
+narrated line gets one held, north-up camera at country or continent scale, so there are no turn-by-turn
+close-ups. Longitudes are unwrapped, so routes and camera moves cross the date line without jumping. It reuses
+routevid3's map worker (extracted from `routevid3.py`, so there's still one copy), `tools/narrate.py` and the
+same tile cache.
+
+```bash
+python3 worldtrip.py --trip examples/woodbridge_world.json --work work --plan-only     # legs, borders, script
+python3 worldtrip.py --trip examples/woodbridge_world.json --work work --narrate <voice dir> --stills 3,82,110
+python3 worldtrip.py --trip examples/woodbridge_world.json --work work --narrate <voice dir> --out world.mp4
+```
+
+The trip file lists stops (with coordinates) and legs. Each leg is `drive` or `flight` (`hours` for the
+flight time) with one or more `holds`. Each hold has a spoken `text` and an on-screen `card`. A hold's `to_mile`
+(miles from the start of the leg) splits a long drive into several views. Borders come from Natural Earth
+(countries, downloaded once; US states from `data/admin1.geojson`).
+`examples/woodbridge_world.json` (Woodbridge, VA, eastward round the world, 19,483 mi) renders a 2:42 video in
+about 10 minutes on 2 cores.
+
 ## Map data rules
 
 - **Never use `tile.openstreetmap.org`.** The OSM Foundation's tile servers forbid any pre-emptive fetching,
@@ -128,6 +150,8 @@ More detail: [docs/RESULTS.md](docs/RESULTS.md) (version history and measurement
 
 ```
 routevid3.py          the tool (one file)
+worldtrip.py          multi-leg overview videos: drives plus great-circle flights
+examples/             trip files for worldtrip.py
 tools/narrate.py      local TTS (Kokoro / sherpa-onnx) -> narration.wav + exact sentence timestamps
 tools/check_audio.py  speech-recognition check of the narration against the script
 tools/pack.py         asset packs: URL mapping, validation, reading and writing (route-video-pack-v1)
