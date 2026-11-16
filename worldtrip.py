@@ -37,6 +37,7 @@ ap.add_argument("--narrate", metavar="MODEL_DIR"); ap.add_argument("--voice", de
 ap.add_argument("--style", default="https://tiles.openfreemap.org/styles/liberty")
 ap.add_argument("--out", default="worldtrip.mp4"); ap.add_argument("--crf", type=int, default=24); ap.add_argument("--maxrate", default="3M")
 ap.add_argument("--plan-only", action="store_true"); ap.add_argument("--stills")
+ap.add_argument("--draft", metavar="OUT_JSON", help="fill in missing holds, cards, narration and flight times from the route data, write the trip file, stop")
 ap.add_argument("--contact-sheet", metavar="JPG", help="one image with a thumbnail of every narrated view, then stop")
 A = ap.parse_args()
 WORK = os.path.abspath(A.work); os.makedirs(WORK, exist_ok=True); os.makedirs(A.cache, exist_ok=True)
@@ -136,6 +137,115 @@ def region_at(mm):
     return r
 
 # ====================================================================== segments: intro, one hold per leg part, outro
+
+# ====================================================================== --draft: write the narration from the data (hand-written holds are kept)
+def say_dist(mi):
+    n = mi if mi < 100 else (round(mi / 10) * 10 if mi < 1000 else round(mi / 100) * 100)
+    n = int(round(n / 5) * 5) if mi < 100 else int(n)
+    if 1100 <= n < 2000 and n % 100 == 0: return sp.words(n // 100) + " hundred"     # "seventeen hundred"
+    return sp.words(n)
+def say_hours(h):
+    h = round(h * 2) / 2; whole = int(h)
+    if whole == 0: return "half an hour"
+    return f"{sp.words(whole)}{' and a half' if h - whole else ''} hour{'s' if h > 1 else ''}"
+def plain(name): return re.sub(r"\s*\([^)]*\)", "", name).strip()
+def and_list(xs): return xs[0] if len(xs) == 1 else ", ".join(xs[:-1]) + " and " + xs[-1] if xs else ""
+def big_cities(L):
+    """Cities of 100,000+ (city proper) within 25 km of the road, in order of travel, not the leg's own ends."""
+    try:
+        import geopandas as gpd
+        base = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/10m_cultural/ne_10m_populated_places_simple"
+        for ext in ("shp", "shx", "dbf", "prj", "cpg"):
+            if not os.path.exists(f"{NE}/places.{ext}"): open(f"{NE}/places.{ext}", "wb").write(http(f"{base}.{ext}", binary=True))
+        pp = gpd.read_file(f"{NE}/places.shp", encoding="utf-8")
+        pp = pp[pp["pop_min"] >= 100000][["name", "pop_min", "geometry"]].to_crs(3857)     # city proper, not metro (no suburbs)
+        sm = np.arange(L["m0"], L["m1"], 1.0); lo = (np.interp(sm, cum, coords[:, 0]) + 180) % 360 - 180; la = np.interp(sm, cum, coords[:, 1])
+        road = gpd.GeoDataFrame({"mile": sm}, geometry=gpd.points_from_xy(lo, la), crs=4326).to_crs(3857)
+        near = gpd.sjoin_nearest(pp, road, max_distance=25000).sort_values("mile").drop_duplicates("name")
+        out = []
+        for _, r in near.iterrows():
+            if min(r["mile"] - L["m0"], L["m1"] - r["mile"]) > 40: out.append((float(r["mile"]), r["name"], int(r["pop_min"])))
+        return out
+    except Exception as e:
+        print("cities skipped:", e); return []
+def regions_in(m0, m1):
+    names = [region_at(m0 + 0.01)] + [nm for c_m, nm in crossings if m0 < c_m < m1]
+    out = []
+    for n in names:
+        if n and n not in out: out.append(n)
+    return out
+def draft_leg(L, first_drive):
+    a, b = plain(L["a"]["name"]), plain(L["b"]["name"]); hs = L["spec"].get("holds") or []
+    if L["mode"] == "flight":
+        hrs = L["spec"].get("hours") or round((L["dist"] / 500 + 0.5) * 2) / 2; L["spec"]["hours"] = hrs; L["secs"] = hrs * 3600
+        i0, i1 = int(np.searchsorted(cum, L["m0"])), int(np.searchsorted(cum, L["m1"]))
+        k = np.floor((coords[i0:i1 + 1, 0] + 180) / 360)
+        dl = ""
+        if len(k) and k.max() != k.min():
+            dl = " You'll cross the International Date Line and " + ("gain back a day." if coords[i1, 0] > coords[i0, 0] else "lose a day.")
+        hrs_card = f"{int(hrs)}½" if hrs % 1 else f"{int(hrs)}"
+        auto = [dict(card=f"{a} to {b}, about {hrs_card} hours",
+                     text=f"Fly from {a} to {b}: about {say_dist(L['dist'])} miles, roughly {say_hours(hrs)}.{dl}")]
+    else:
+        n = 1 if L["dist"] <= 600 else max(2, math.ceil(L["dist"] / 900)); cities = big_cities(L)
+        cuts = [L["m0"]]
+        for j in range(1, n):
+            target = L["m0"] + L["dist"] * j / n; part = L["dist"] / n
+            opts = [c_m for c_m, _ in crossings if L["m0"] < c_m < L["m1"] and abs(c_m - target) < 0.35 * part]
+            cuts.append(min(opts, key=lambda c_m: abs(c_m - target)) if opts else target)
+        cuts.append(L["m1"])
+        kind = "states" if all(r in sp.US_ABBR for r in regions_in(L["m0"], L["m1"])) else "countries"
+        nreg = len(regions_in(L["m0"], L["m1"])); auto = []
+        hrs = L["secs"] / 3600
+        for j in range(n):
+            m0, m1 = cuts[j], cuts[j + 1]; regs = regions_in(m0, m1); inpart = [c for c in cities if m0 <= c[0] < m1]; allc = [c[1] for c in inpart]
+            cs = [c[1] for c in sorted(sorted(inpart, key=lambda c: -c[2])[:4])]      # the 4 biggest, in the order you pass them
+            past = f" past {and_list(cs)}" if cs else ""
+            through = f"through {and_list(regs)}" if regs else ""
+            if n == 1:
+                text = (f"{'Drive' if first_drive else 'Next, drive'} from {a} to {b}: about {say_dist(L['dist'])} miles, around {say_hours(hrs)}"
+                        + (f", {through}" if nreg > 1 else "") + (f",{past}." if cs else "."))
+                card = f"{a} to {b}" + (f", past {and_list(cs[:2])}" if cs else "")
+            elif j == 0:
+                text = (f"{'Start with' if first_drive else 'Next,'} the drive from {a} to {b}: about {say_dist(L['dist'])} miles through {sp.words(nreg)} {kind}. "
+                        f"First, head {through}{past}.")
+                card = f"{a} to {(allc[-1] if allc else regs[-1])}, {through}"
+            elif j == n - 1:
+                text = f"Finally, {through}{past}, and on to {b}." if regs else f"Then on{past} to {b}."
+                card = f"{(allc[0] if allc else regs[0])} to {b}, {through}"
+            else:
+                text = f"Then on {through}{past}."
+                card = f"{(allc[0] if allc else regs[0])} to {(allc[-1] if allc else regs[-1])}, {through}"
+            auto.append(dict(to_mile=None if j == n - 1 else round(m1 - L["m0"], 1), card=card, text=text))
+    if not hs: return auto
+    for h, d in zip(hs, auto):                         # keep what was written by hand, fill only the gaps
+        for k_ in ("card", "text"): h.setdefault(k_, d[k_])
+    return hs
+if A.draft:
+    nd = sum(L["mode"] == "drive" for L in LEGS); nf = len(LEGS) - nd; first_drive = True
+    for L in LEGS:
+        TRIP["legs"][L["i"]]["holds"] = draft_leg(L, first_drive and L["mode"] == "drive")
+        if L["mode"] == "flight": TRIP["legs"][L["i"]]["hours"] = L["spec"]["hours"]
+        if L["mode"] == "drive": first_drive = False
+    home, end = plain(LEGS[0]["a"]["name"]), plain(LEGS[-1]["b"]["name"])
+    loop = home == end and coords[-1, 0] - coords[0, 0] >= 300
+    TRIP.setdefault("title", f"Around the World from {home}" if loop else f"{home} to {end}")
+    TRIP.setdefault("subtitle", f"{nd} drive{'s' if nd != 1 else ''}  ·  {nf} flight{'s' if nf != 1 else ''}  ·  {TOTAL:,.0f} miles")
+    TRIP.setdefault("short", f"{home}  →  around the world  →  {end}" if loop else f"{home}  →  {end}")
+    TRIP.setdefault("intro", f"This is your trip {'around the world, from ' + home + ' and back' if loop else 'from ' + home + ' to ' + end}: "
+                             f"about {say_dist(TOTAL)} miles, with {sp.words(nd)} drive{'s' if nd != 1 else ''} and {sp.words(nf)} flight{'s' if nf != 1 else ''}.")
+    dm = sum(L["dist"] for L in LEGS if L["mode"] == "drive")
+    TRIP.setdefault("outro", (f"And you're home in {end}. " if loop else f"And you've arrived in {end}. ")
+                    + f"That's about {say_dist(dm)} miles by car and {say_dist(TOTAL - dm)} in the air.")
+    TRIP.setdefault("outro_title", f"Welcome home to {end}" if loop else f"You made it to {end}")
+    json.dump(TRIP, open(A.draft, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+    print(f"draft: {A.draft} ({sum(len(l['holds']) for l in TRIP['legs'])} holds). Review the text, then run with --trip {A.draft}")
+    for l in TRIP["legs"]:
+        for h in l["holds"]: print(f"  [{l['mode']:<6}] {h['card']}\n           {h['text']}")
+    sys.exit()
+for L in LEGS:
+    if not L["spec"].get("holds"): raise SystemExit(f"leg {L['i'] + 1} has no holds: run with --draft out.json first, then --trip out.json")
+
 SEGS = [dict(kind="intro", m0=0.0, m1=0.0, text=TRIP["intro"], title="Overview")]
 NL = len(LEGS)
 for L in LEGS:
