@@ -1,0 +1,166 @@
+{
+ "title": "Around the World from Woodbridge",
+ "subtitle": "Heading east  ·  4 drives  ·  3 flights  ·  back home to Woodbridge",
+ "short": "Woodbridge  →  around the world  →  Woodbridge",
+ "outro_title": "Welcome home to Woodbridge",
+ "outro_subtitle": "Around the world, heading east",
+ "world_view": {
+  "lon": 25,
+  "lat": 28
+ },
+ "intro": "This is your trip around the world, from Woodbridge, Virginia, heading east and back home again: about nineteen and a half thousand miles, with four drives and three flights.",
+ "outro": "And you're home in Woodbridge. That's the whole world in one loop: about four thousand seven hundred miles by car and fourteen thousand eight hundred in the air.",
+ "stops": [
+  {
+   "id": "home",
+   "name": "Woodbridge",
+   "label": "Woodbridge",
+   "lon": -77.26763,
+   "lat": 38.63645
+  },
+  {
+   "id": "iad",
+   "name": "Dulles (IAD)",
+   "label": "Dulles",
+   "lon": -77.4565,
+   "lat": 38.9531
+  },
+  {
+   "id": "cdg",
+   "name": "Paris (CDG)",
+   "label": "Paris CDG",
+   "lon": 2.5479,
+   "lat": 49.0097
+  },
+  {
+   "id": "ist",
+   "name": "Istanbul (IST)",
+   "label": "Istanbul Airport",
+   "lon": 28.7519,
+   "lat": 41.2753
+  },
+  {
+   "id": "kix",
+   "name": "Osaka (KIX)",
+   "label": "Osaka Kansai",
+   "lon": 135.2304,
+   "lat": 34.432
+  },
+  {
+   "id": "hnd",
+   "name": "Tokyo (HND)",
+   "label": "Tokyo Haneda",
+   "lon": 139.7798,
+   "lat": 35.5494
+  },
+  {
+   "id": "lax",
+   "name": "Los Angeles (LAX)",
+   "label": "Los Angeles LAX",
+   "lon": -118.4085,
+   "lat": 33.9416
+  }
+ ],
+ "legs": [
+  {
+   "mode": "drive",
+   "from": "home",
+   "to": "iad",
+   "holds": [
+    {
+     "card": "Woodbridge to Dulles Airport",
+     "text": "First, drive from Woodbridge to Dulles Airport: about thirty miles up Virginia one twenty-three and the Fairfax County Parkway, around an hour."
+    }
+   ]
+  },
+  {
+   "mode": "flight",
+   "from": "iad",
+   "to": "cdg",
+   "hours": 7.5,
+   "holds": [
+    {
+     "card": "Dulles to Paris Charles de Gaulle, about 7½ hours",
+     "text": "Fly from Dulles across the Atlantic to Paris Charles de Gaulle: about three thousand eight hundred fifty miles, roughly seven and a half hours."
+    }
+   ]
+  },
+  {
+   "mode": "drive",
+   "from": "cdg",
+   "to": "ist",
+   "holds": [
+    {
+     "to_mile": 603,
+     "card": "Paris to Munich, through France and Germany",
+     "text": "In Paris, pick up a car for the longest drive of the trip: about seventeen hundred miles through eight countries. Head east past Metz and Strasbourg into Germany, then on through Stuttgart and Munich."
+    },
+    {
+     "to_mile": 1111,
+     "card": "Salzburg to Belgrade, through Austria, Slovenia and Croatia",
+     "text": "Cross into Austria at Salzburg, go under the Alps through the Karawanken Tunnel into Slovenia, then continue past Ljubljana and Zagreb to Belgrade, in Serbia."
+    },
+    {
+     "card": "Belgrade to Istanbul, through Bulgaria and into Turkey",
+     "text": "From Belgrade, head southeast through Niš into Bulgaria, past Sofia and Plovdiv, then cross into Turkey at Edirne for the final run to Istanbul Airport."
+    }
+   ]
+  },
+  {
+   "mode": "flight",
+   "from": "ist",
+   "to": "kix",
+   "hours": 11,
+   "holds": [
+    {
+     "card": "Istanbul to Osaka Kansai, about 11 hours",
+     "text": "From Istanbul, fly east across Asia to Osaka's Kansai Airport: about five thousand four hundred miles, roughly eleven hours."
+    }
+   ]
+  },
+  {
+   "mode": "drive",
+   "from": "kix",
+   "to": "hnd",
+   "holds": [
+    {
+     "card": "Osaka Kansai to Tokyo Haneda, past Nagoya and Shizuoka",
+     "text": "In Japan, drive from Kansai Airport to Tokyo's Haneda Airport: about three hundred forty miles of expressway past Nagoya, Shizuoka and Yokohama. Remember, Japan drives on the left."
+    }
+   ]
+  },
+  {
+   "mode": "flight",
+   "from": "hnd",
+   "to": "lax",
+   "hours": 10,
+   "holds": [
+    {
+     "card": "Tokyo Haneda to Los Angeles, about 10 hours",
+     "text": "From Haneda, fly across the Pacific to Los Angeles: about five thousand five hundred miles, roughly ten hours. You'll cross the International Date Line and gain back a day."
+    }
+   ]
+  },
+  {
+   "mode": "drive",
+   "from": "lax",
+   "to": "home",
+   "holds": [
+    {
+     "to_mile": 1018,
+     "card": "Los Angeles to Albuquerque, on I-15 and I-40",
+     "text": "Finally, the drive home across America: about two thousand six hundred sixty miles. Leave Los Angeles on I fifteen and I forty, through Arizona past Flagstaff, and into New Mexico through Albuquerque."
+    },
+    {
+     "to_mile": 1810,
+     "card": "Amarillo to Memphis, across Texas, Oklahoma and Arkansas",
+     "text": "Stay on I forty across the Texas panhandle at Amarillo, through Oklahoma City, and across Arkansas to Memphis."
+    },
+    {
+     "card": "Memphis to Woodbridge, via Nashville, Knoxville and I-81",
+     "text": "Then cross Tennessee past Nashville and Knoxville, take I eighty-one up the Shenandoah Valley into Virginia, and head home to Woodbridge."
+    }
+   ]
+  }
+ ]
+}
