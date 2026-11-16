@@ -1,0 +1,21 @@
+{
+ "title": "Corridor H: Davis to Parsons",
+ "subtitle": "A pixel-art test drive through the Allegheny Mountains",
+ "short": "Davis  →  Thomas  →  Parsons",
+ "outro_title": "Made it to Parsons",
+ "outro_subtitle": "15 miles of mountain road",
+ "world_view": {"lon": -79.585, "lat": 39.118, "zoom": 11.2},
+ "intro": "Here's a short test drive on Corridor H, through the mountains of West Virginia.",
+ "outro": "And that's Parsons. Fifteen miles of mountain road, in eight bits.",
+ "stops": [
+  {"id": "davis", "name": "Davis", "label": "Davis", "lon": -79.476008, "lat": 39.134341},
+  {"id": "thomas", "name": "Thomas", "label": "Thomas", "lon": -79.495382, "lat": 39.152588},
+  {"id": "parsons", "name": "Parsons", "label": "Parsons", "lon": -79.678172, "lat": 39.115194}
+ ],
+ "legs": [
+  {"mode": "drive", "from": "davis", "to": "thomas", "holds": [
+   {"card": "Davis to Thomas", "text": "From the end of the four-lane at Davis, turn right and climb a couple of miles to Thomas."}]},
+  {"mode": "drive", "from": "thomas", "to": "parsons", "holds": [
+   {"card": "Thomas to Parsons, down the Seneca Trail", "text": "Then take US two nineteen, the Seneca Trail, winding down the valley to Parsons."}]}
+ ]
+}

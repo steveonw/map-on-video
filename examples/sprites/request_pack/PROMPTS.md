@@ -1,0 +1,59 @@
+# Sprite requests: retro travel pack (for map-on-video)
+
+Shared by every request. Paste it after each prompt.
+
+STYLE: classic 8-bit-era pixel art. Every sprite is 32x32 pixels, drawn at 8x scale so each art pixel is a crisp
+8x8 block (one frame = a 256x256 cell). Hard edges only: no anti-aliasing, no gradients, no blur, no dithering noise.
+Limited palette of at most 16 flat colours, bright and friendly. 1-pixel dark outline around each sprite.
+Light from the top left. Every frame in a sheet is the same size, scale and palette, centred in its cell.
+
+LAYOUT: follow the attached layout.png. One frame per cell, left to right, in the order listed. The background is
+flat solid magenta #FF00FF everywhere (it is cut out later): no shadows on the background, no floor, no scenery.
+The short line near the bottom of each cell marks where the wheels or feet touch the ground.
+
+AVOID: no text, letters, numbers, logos, brand names or watermarks; no grid lines or cell borders in the result;
+no characters, vehicles or designs from existing games, films or brands; no realistic shading; no extra frames.
+
+---
+
+## P1-01 car_topdown_8dir
+
+For: the car that drives the route on the map in directions videos. Seen from directly above.
+Layout: 8 cells in one row (2048x256).
+Prompt: A small, friendly, original compact family car seen from directly above (top-down), cherry red body,
+white roof stripe, light-blue windscreen and rear window, four dark tyres just visible at the corners, yellow
+headlights at the front. The same car in 8 directions, one per cell, left to right: facing up (north), up-right,
+right, down-right, down, down-left, left, up-left. The car fills about 60% of each cell.
++ STYLE, LAYOUT, AVOID
+
+## P1-02 plane_topdown_8dir
+
+For: the plane that flies the arcs between airports.
+Layout: 8 cells in one row (2048x256).
+Prompt: A small original passenger jet seen from directly above, white body, sky-blue tail and wing tips, two
+engines under the wings, a dark nose cone. The same plane in 8 directions, one per cell, left to right: nose up
+(north), up-right, right, down-right, down, down-left, left, up-left. Wings span about 80% of the cell.
++ STYLE, LAYOUT, AVOID
+
+## P1-03 traveler_side_cycles
+
+For: a little traveller who walks between stops in a trip recap.
+Layout: 8 columns x 3 rows (2048x768). Seen from the side, facing right (left-facing is mirrored in code).
+Prompt: An original small cheerful traveller, chibi proportions (big head, small body), brown hair, round
+glasses, yellow T-shirt, blue jeans, white trainers, a small green backpack.
+Row 1, walk cycle, 8 frames: a smooth looping walk, arms swinging, backpack bouncing slightly.
+Row 2, idle, first 4 cells only (leave the rest plain magenta): standing and breathing, one blink in frame 3.
+Row 3, wave, first 4 cells only: raising one hand, waving twice, lowering it.
+Feet on the ground line in every frame; the character never changes size or position in its cell except for
+the natural walk bob.
++ STYLE, LAYOUT, AVOID
+
+## P2-04 markers_and_effects (optional)
+
+For: stop markers and little effects on the map.
+Layout: 6 columns x 2 rows (1536x512).
+Row 1, a map pin bouncing into place, 6 frames: a red map pin with a white dot drops from the top of the cell,
+squashes on landing, bounces once and settles. Tip of the pin on the ground line.
+Row 2, an arrival sparkle, 6 frames: a small burst of yellow and white star pixels that grows, twinkles and fades
+to nothing in the last frame.
++ STYLE, LAYOUT, AVOID

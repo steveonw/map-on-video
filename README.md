@@ -129,7 +129,8 @@ directions, with hysteresis so wiggly roads don't flicker), a plane on the arcs 
 RotSprite-style method, so it looks the same every way), map pins that bounce in with a sparkle as each stop is
 reached, and a traveller who waves at the end. DIR holds four 8x sheets on magenta (`P1-01.png` car, `P1-02.png` plane,
 `P1-03.png` traveller, `P2-04.png` pins and sparkle; layout in `tools/sprites.py`); `--sprite-scale 3` (default) draws
-32 px sprites at 96 px.
+32 px sprites at 96 px. A ready set is in `examples/sprites/` (with the prompts that made it); try
+`--trip examples/corridor_h_sprites.json --sprites examples/sprites`.
 `examples/woodbridge_world.json` (Woodbridge, VA, eastward round the world, 19,483 mi) renders a 2:42 video in
 about 10 minutes on 2 cores.
 

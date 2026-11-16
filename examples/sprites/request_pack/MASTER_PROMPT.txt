@@ -1,0 +1,19 @@
+I'm attaching a zip of sprite-sheet requests for a retro pixel-art travel video. Please make one image per request.
+
+In the zip: one folder per request with layout.png (the frame grid to follow: one frame per cell, magenta
+background) and prompt.txt (what to draw), plus PROMPTS.md with everything in one file.
+
+Work in order: P1-01, P1-02, P1-03, then P2-04 if you can. Follow each prompt.txt exactly, including the
+shared STYLE, LAYOUT and AVOID blocks: 8-bit pixel art drawn at 8x scale (each art pixel a crisp 8x8 block),
+at most 16 flat colours, no anti-aliasing, flat magenta #FF00FF background, same size as layout.png
+(2048x256, 2048x256, 2048x768, 1536x512). Keep each character or vehicle identical from frame to frame.
+Never add text, numbers, logos, grid lines or borders, and don't copy designs from existing games or brands.
+
+Return each image named by its number only (P1-01.png, P1-02.png, P1-03.png, P2-04.png). After each, say in
+one line if anything didn't match (a missing frame, a frame drawn at a different size, colours drifting).
+If you can't do one, skip it, say why, and move on.
+
+If a whole sheet is too hard, make the sprite once in the first direction or pose, then each other frame as
+its own image named P1-01_2.png, P1-01_3.png and so on: I can assemble the sheet myself.
+
+If you can't open zip files, tell me and I'll upload one request at a time.
