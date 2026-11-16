@@ -236,6 +236,8 @@ def instruction(i, j_road, stay=False):
     if d and re.match(r"^(I|US)-", road) and d not in road: road = re.sub(r"^(\S+)", r"\1 " + d, road, count=1)
     tw = toward(dest); tw = f" toward {tw}" if tw and tw not in road else ""
     side = "left" if "left" in mod else ("right" if "right" in mod else "")
+    if stay and typ == "end of road": return f"At the end of the road, turn {side} to stay on {road}"
+    if stay and typ == "turn": return f"Turn {mod.replace('slight ', 'slightly ')} to stay on {road}"
     if stay: return f"Keep {side or 'straight'} to stay on {road}{tw}"
     if typ == "turn": return f"Turn {mod.replace('slight ', 'slightly ')} onto {road}"
     if typ == "fork": return f"Keep {side} onto {road}{tw}" if side else f"Continue onto {road}{tw}"
@@ -248,7 +250,7 @@ def instruction(i, j_road, stay=False):
 KEY = {"turn", "fork", "off ramp", "on ramp", "merge", "end of road", "roundabout", "rotary", "roundabout turn"}
 END_R = max(1.5, min(8.0, TOTAL * 0.02))
 MIN_RUN = max(3.0, TOTAL * 0.004)
-K = A.max_turns or int(np.clip(round(TOTAL / 35) + 4, 6, 14))
+K = A.max_turns or int(np.clip(round(TOTAL / 35) + 4, 6, 18))    # long routes have more must-do splits; the review lists what the cap drops
 def chain_text(idx, lead):
     big = sorted(idx, key=lambda i: -steps[i]["distance"])[:3]; names, seen = [], set()
     for i in sorted(big):
@@ -276,10 +278,15 @@ else:
                         if steps[q]["maneuver"]["type"] in KEY: j0 = q
                 if steps[j0]["maneuver"]["type"] in KEY: cands.append((r, j0, i, j, False))
             cur_long, last_long_start = after, i
-        elif i not in first and after and after == cur_long and steps[i]["maneuver"]["type"] in ("fork", "off ramp"):
+        elif i not in first and after and after == cur_long and steps[i]["maneuver"]["type"] in ("fork", "off ramp", "turn", "end of road"):
+            # staying on the same road can still be a decision: a fork where the road splits from another
+            # (I-64/I-75, I-57/I-64), or a turn / end of road where a route number jogs through town (Corridor H)
+            typ_, mod_ = steps[i]["maneuver"]["type"], steps[i]["maneuver"].get("modifier", "")
             refs = {re.sub(r"\s(North|South|East|West)$", "", norm_ref(x.split(":")[0].strip()))
                     for x in re.findall(r"\b(?:I|US)\s?\d+\w*(?:\s(?:North|South|East|West))?", steps[i].get("destinations") or "")}
-            if refs - {after} and r >= MIN_RUN: cands.append((r * 0.5, i, i, j, True))
+            decision = (typ_ == "off ramp" and refs - {after}) or (typ_ == "fork" and ("left" in mod_ or "right" in mod_)) \
+                or (typ_ in ("turn", "end of road") and mod_ not in ("straight", ""))
+            if decision and r >= MIN_RUN: cands.append((r * 0.5, i, i, j, True))
     MERGE_MI = max(1.5, TOTAL * 0.002); dedup = []
     for c in sorted(cands, key=lambda c: c[1]):
         if dedup and step_mi[c[1]] - step_mi[dedup[-1][1]] < MERGE_MI:
@@ -294,6 +301,26 @@ else:
     for r, j0, i, j, stay in keep: turns.append(dict(steps=sorted({j0, i}), title=None, text=instruction(j0, j, stay)))
     en_idx = last or [len(steps) - 1]
     turns.append(dict(steps=[en_idx[0], len(steps) - 1], title="DESTINATION", text=chain_text(en_idx, "Final approach")))
+# ---- review: every decision-type step the turn list does not cover, with the reason, for a human to check
+REVIEW_TYPES = {"turn", "fork", "off ramp", "end of road", "roundabout", "rotary", "roundabout turn", "merge", "on ramp"}
+_covered = set(range(turns[0]["steps"][0], turns[0]["steps"][-1] + 1)) | set(range(turns[-1]["steps"][0], len(steps)))
+for t in turns[1:-1]: _covered |= set(range(min(t["steps"]), max(t["steps"]) + 1))
+REVIEW = []
+for i, st in enumerate(steps):
+    if i in _covered or st["maneuver"]["type"] not in REVIEW_TYPES: continue
+    if A.turns_json: why = "not in --turns-json"
+    else:
+        kept_at = [step_mi[c[1]] for c in keep]
+        near = min(kept_at, key=lambda m: abs(m - step_mi[i])) if kept_at else None
+        if any(c[1] == i for c in dedup): why = f"over the {K}-turn cap"
+        elif any(c[1] == i for c in cands): why = f"merged with the turn at mile {near:,.1f}"
+        elif near is not None and abs(near - step_mi[i]) < MERGE_MI: why = f"within {MERGE_MI:.1f} mi of the turn at mile {near:,.1f}"
+        elif ident(road_after_idx(i)) == ident(max(0, i - 1)) or not ident(road_after_idx(i)): why = "same road, not a split or turn"
+        else: why = f"next road runs under {MIN_RUN:.1f} mi"
+    m_ = st["maneuver"]
+    REVIEW.append(dict(step=i, mile=round(float(step_mi[i]), 1), type=m_["type"], modifier=m_.get("modifier", ""), road=display(i),
+                       signs=st.get("destinations") or "", why=why))
+json.dump(REVIEW, open(f"{WORK}/turn_review.json", "w"), indent=1)
 for t in turns:
     t["mile"] = float(step_mi[t["steps"][-1]]); t["first_mile"] = float(step_mi[t["steps"][0]])
     t["locs"] = [steps[j]["maneuver"]["location"] for j in t["steps"]]
@@ -414,6 +441,9 @@ SEGS.append(dict(kind="outro", m0=TOTAL, m1=TOTAL, title="Arrived", text=f"You h
 print(f"key turns ({nkey} + start/arrive):")
 for i, t in enumerate(turns): print(f"  {i:2d}  mile {t['mile']:7.1f}  {t['title']:<26} {t['text']}")
 print("regions:", [(round(c['mile']), c['state']) for c in crossings])
+if REVIEW:
+    print(f"review: {len(REVIEW)} decision step(s) not in the turn list (check the ones that matter; full list in {WORK}/turn_review.json):")
+    for r_ in REVIEW: print(f"  step {r_['step']:3d}  mile {r_['mile']:7,.1f}  {r_['type']:<11} {r_['modifier']:<12} {r_['road'][:28]:<28} {r_['signs'][:34]:<34}  {r_['why']}")
 if MISSING_NAMES: print(f"note: no place name in the pack for {len(MISSING_NAMES)} turn(s) ({', '.join(MISSING_NAMES)}); "
                         "their lines and cards leave the name out (add them to data/reverse.json)")
 print("script:"); [print(f"  [{s['kind']:<6}] {s['text']}") for s in SEGS]
